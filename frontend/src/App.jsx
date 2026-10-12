@@ -1,19 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
-import { fetchNews, getOrganizations, getResults } from "./api";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchNews, getOptions, getOrganizations, getResults, setDisplayTimeZone } from "./api";
 import OrgBar from "./components/OrgBar";
 import OverviewCards from "./components/OverviewCards";
 import Gaps from "./pages/Gaps";
 import Speed from "./pages/Speed";
 import Performance from "./pages/Performance";
 import Suggestions from "./pages/Suggestions";
+import Opportunities from "./pages/Opportunities";
+import Explorer from "./pages/Explorer";
 import Accounts from "./pages/Accounts";
+import Workspace from "./pages/Workspace";
 
 const TABS = [
   { id: "suggestions", label: "Suggestions" },
+  { id: "opportunities", label: "Opportunities" },
   { id: "performance", label: "Performance" },
   { id: "gaps", label: "Coverage Gaps" },
-  { id: "speed", label: "First to Publish" },
+  { id: "explorer", label: "Content Explorer" },
+  { id: "speed", label: "First to Publish", onlyWhen: "time_sensitive" },
   { id: "accounts", label: "Accounts" },
+  { id: "workspace", label: "Workspace" },
 ];
 
 function savedOrg() {
@@ -26,6 +32,7 @@ function savedOrg() {
 
 export default function App() {
   const [orgs, setOrgs] = useState([]);
+  const [options, setOptions] = useState(null);
   const [orgId, setOrgId] = useState(savedOrg);
   // A link ending in #performance (or another tab id) opens that tab.
   const [tab, setTab] = useState(() => {
@@ -38,12 +45,14 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0); // tells tabs that load their own data to reload
 
-  // Load organizations; pick the saved one or the first.
+  // Load workspaces and form options; pick the saved workspace or the first.
   const loadOrgs = useCallback(async () => {
     try {
-      const list = await getOrganizations();
+      const [list, opts] = await Promise.all([getOrganizations(), getOptions()]);
       setOrgs(list);
+      setOptions(opts);
       setOrgId((cur) => (list.some((o) => o.id === cur) ? cur : list[0]?.id ?? null));
       setError("");
       return true;
@@ -67,15 +76,13 @@ export default function App() {
     };
   }, [loadOrgs]);
 
-  async function tryAgain() {
-    if (await loadOrgs()) loadResults();
-  }
-
   const loadResults = useCallback(async () => {
     if (!orgId) return;
     setLoading(true);
     try {
-      setResults(await getResults(orgId));
+      const r = await getResults(orgId);
+      setDisplayTimeZone(r.config?.timezone);
+      setResults(r);
       setError("");
       setUpdatedAt(new Date());
     } catch (e) {
@@ -84,6 +91,10 @@ export default function App() {
       setLoading(false);
     }
   }, [orgId]);
+
+  async function tryAgain() {
+    if (await loadOrgs()) loadResults();
+  }
 
   useEffect(() => {
     try {
@@ -96,26 +107,42 @@ export default function App() {
     loadResults();
   }, [orgId, loadResults]);
 
+  useEffect(() => {
+    if (window.location.hash.slice(1) !== tab) window.history.replaceState(null, "", `#${tab}`);
+  }, [tab]);
+
   async function refresh() {
     setNotice("");
     setRefreshing(true);
     try {
       const res = await fetchNews(orgId);
       const failed = (res.accounts || []).filter((a) => a.error).map((a) => a.account);
+      const questions = (res.accounts || []).reduce((n, a) => n + (a.questions || 0), 0);
       setNotice(
-        `${res.added} new ${res.added === 1 ? "item" : "items"} fetched.` +
-          (failed.length ? ` Couldn't read: ${[...new Set(failed)].join(", ")}. See the Accounts tab.` : "")
+        `${res.added} new ${res.added === 1 ? "item" : "items"} fetched` +
+          (questions ? `, ${questions} new audience question${questions === 1 ? "" : "s"}` : "") + "." +
+          (failed.length ? ` Couldn't read: ${[...new Set(failed)].join(", ")}. See the Accounts tab.` : "") +
+          (res.quota?.warning ? ` ${res.quota.warning}` : "")
       );
     } catch (e) {
       setError(e.message);
     } finally {
       setRefreshing(false);
     }
-    loadResults();
+    await loadResults();
+    setRefreshKey((k) => k + 1);
   }
 
-  const lagging = results?.performance?.suggestions?.filter((s) => s.tone === "lagging").length;
-  const counts = { suggestions: lagging, gaps: results?.gaps.length, speed: results?.speed.length };
+  const config = results?.config;
+  const visibleTabs = TABS.filter((t) => !t.onlyWhen || config?.[t.onlyWhen] || (t.id === "speed" && results?.speed?.length));
+  const recKeys = useMemo(() => new Set((results?.recommendations || []).map((r) => r.key)), [results]);
+  const counts = {
+    suggestions: results?.recommendations?.length,
+    gaps: results?.overview?.topics_to_review,
+    speed: results?.speed?.length,
+  };
+  const org = orgs.find((o) => o.id === orgId);
+  const ytDefinitions = options?.platforms?.supported.find((p) => p.id === "youtube")?.metrics;
 
   return (
     <div className="app">
@@ -123,7 +150,7 @@ export default function App() {
         <div>
           <span className="eyebrow">MediaOps</span>
           <h1>Competitive Tracker</h1>
-          <p>Compare our content with competitors on news websites and YouTube: where we're lagging, what's working, and what to do next.</p>
+          <p>Compare your content with competitors on the platforms you use: what they cover that you don't, what's working for them, and what to make next.</p>
         </div>
         <div className="banner-actions">
           <button className="btn light" onClick={refresh} disabled={!orgId || refreshing || loading}>
@@ -138,11 +165,13 @@ export default function App() {
       <OrgBar
         orgs={orgs}
         orgId={orgId}
+        config={config}
+        options={options}
         onSelect={setOrgId}
-        onAdded={(org) => {
-          setOrgs((list) => [...list, org].sort((a, b) => a.name.localeCompare(b.name)));
-          setOrgId(org.id);
-          setTab("accounts");
+        onAdded={(o) => {
+          setOrgs((list) => [...list, o].sort((a, b) => a.name.localeCompare(b.name)));
+          setOrgId(o.id);
+          setTab("workspace");
         }}
       />
 
@@ -160,16 +189,16 @@ export default function App() {
             {error ? (
               <><b>Waiting for the API…</b><span>This page reconnects by itself once backend\run_api.bat is running.</span></>
             ) : (
-              <><b>Add your first organization</b><span>Click "+ Add organization" above.</span></>
+              <><b>Add your first workspace</b><span>Click "+ Add workspace" above: for yourself, a client, or a brand.</span></>
             )}
           </div>
         </section>
       ) : (
         <>
-          <OverviewCards data={results?.overview} perf={results?.performance} />
+          <OverviewCards data={results?.overview} perf={results?.performance} config={config} />
 
           <nav className="tabs" role="tablist">
-            {TABS.map((t) => (
+            {visibleTabs.map((t) => (
               <button
                 key={t.id}
                 role="tab"
@@ -183,11 +212,29 @@ export default function App() {
             ))}
           </nav>
 
-          {tab === "suggestions" && <Suggestions items={results?.performance?.suggestions} />}
-          {tab === "performance" && <Performance perf={results?.performance} />}
-          {tab === "gaps" && <Gaps gaps={results?.gaps || []} windowHours={results?.organization?.window_hours} />}
+          {tab === "suggestions" && (
+            <Suggestions orgId={orgId} items={results?.recommendations} readiness={results?.readiness} config={config}
+              onNavigate={setTab} onTracked={() => setRefreshKey((k) => k + 1)} />
+          )}
+          {tab === "opportunities" && <Opportunities orgId={orgId} onNavigate={setTab} refreshKey={refreshKey} />}
+          {tab === "performance" && <Performance orgId={orgId} perf={results?.performance} definitions={ytDefinitions} refreshKey={refreshKey} />}
+          {tab === "gaps" && (
+            <Gaps orgId={orgId} gaps={results?.gaps || []} windowHours={results?.organization?.window_hours} config={config}
+              recKeys={recKeys} onNavigate={setTab} refreshKey={refreshKey} />
+          )}
+          {tab === "explorer" && <Explorer orgId={orgId} refreshKey={refreshKey} />}
           {tab === "speed" && <Speed rows={results?.speed || []} />}
-          {tab === "accounts" && <Accounts orgId={orgId} onChanged={loadResults} />}
+          {tab === "accounts" && <Accounts orgId={orgId} platforms={options?.platforms} onChanged={loadResults} />}
+          {tab === "workspace" && (
+            <Workspace
+              orgId={orgId} org={org} config={config} options={options} onNavigate={setTab}
+              onSaved={(o) => {
+                setOrgs((list) => list.map((x) => (x.id === o.id ? o : x)));
+                loadResults();
+                setRefreshKey((k) => k + 1);
+              }}
+            />
+          )}
         </>
       )}
     </div>

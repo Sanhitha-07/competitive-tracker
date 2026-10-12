@@ -32,3 +32,15 @@ def test_link_is_understood(text, first):
 def test_non_channel_link_gives_clear_error():
     with pytest.raises(ValueError, match="doesn't point to a channel"):
         _lookups("https://www.youtube.com/feed/trending")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("How long should I rest between sets?", True),
+    ("what mic do you use for streaming", True),
+    ("Great video, thanks!", False),
+    ("Is this good? https://spam.example/x", False),  # links are skipped
+    ("why?", False),  # too short to be useful
+])
+def test_question_detection(text, expected):
+    from youtube import looks_like_question
+    assert looks_like_question(text) is expected

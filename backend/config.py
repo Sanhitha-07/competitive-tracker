@@ -10,3 +10,8 @@ if _env.exists():
             os.environ.setdefault(key.strip(), value.strip())
 
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+# Our own cap on YouTube units per day (YouTube's free limit is 10,000).
+YOUTUBE_DAILY_BUDGET = int(os.environ.get("YOUTUBE_DAILY_BUDGET", "9000"))
+# Optional: MediaOps endpoint that accepts Draft Packages. Empty = copy/paste handoff.
+MEDIAOPS_DRAFTS_URL = os.environ.get("MEDIAOPS_DRAFTS_URL", "")
+MEDIAOPS_API_TOKEN = os.environ.get("MEDIAOPS_API_TOKEN", "")

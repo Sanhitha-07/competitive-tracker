@@ -4,3 +4,5 @@ sqlmodel
 rapidfuzz
 feedparser
 pytest
+tzdata
+httpx

@@ -11,14 +11,14 @@ export default function Speed({ rows }) {
       <div className="panel-head">
         <div>
           <h2>First to Publish</h2>
-          <p className="muted">Stories we covered that competitors also covered: who was first, and how late we were.</p>
+          <p className="muted">Stories you covered that competitors also covered: who was first, and how late you were. Matched by headline similarity, so it suits time-sensitive content (news, launches, live events).</p>
         </div>
       </div>
 
       {rows.length === 0 ? (
         <div className="empty">
           <b>No shared stories yet</b>
-          <span>When we and a competitor cover the same story, it appears here.</span>
+          <span>When you and a competitor cover the same story, it appears here.</span>
         </div>
       ) : (
         <div className="table-wrap">
@@ -29,7 +29,7 @@ export default function Speed({ rows }) {
                 <th>Story</th>
                 <th>First by</th>
                 <th>Their time</th>
-                <th>Our time</th>
+                <th>Your time</th>
               </tr>
             </thead>
             <tbody>
@@ -37,7 +37,7 @@ export default function Speed({ rows }) {
                 <tr key={r.story_id}>
                   <td className="nowrap">
                     <span className={`pill ${delayTone(r)}`}>
-                      {r.we_were_first ? "We were first" : `${r.delay_minutes} min late`}
+                      {r.we_were_first ? "You were first" : `${r.delay_minutes} min late`}
                     </span>
                   </td>
                   <td className="story">{r.title}</td>

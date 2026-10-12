@@ -1,6 +1,8 @@
-"""YouTube Data API v3: find a channel and read its latest videos with views, likes, comments and length.
+"""YouTube Data API v3: find a channel, read its latest videos with views, likes, comments and length,
+and read questions from public comments.
 
-Quota: about 3-5 units per channel per refresh (the free limit is 10,000 units a day).
+Quota: about 3-5 units per channel per refresh, plus 1 unit per video whose comments are read
+(the free limit is 10,000 units a day). Units used are counted below so a refresh can stop early.
 """
 import json
 import re
@@ -8,27 +10,63 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import date, datetime
 
-from config import YOUTUBE_API_KEY
+from config import YOUTUBE_API_KEY, YOUTUBE_DAILY_BUDGET
 
 API = "https://www.googleapis.com/youtube/v3/"
 MAX_VIDEOS = 100  # latest videos read per channel
+COST = {"search": 100}  # every other endpoint used here costs 1 unit per call
+
+
+class QuotaExceeded(ValueError):
+    """YouTube's daily quota (or our own budget) is used up."""
+
+
+class CommentsDisabled(ValueError):
+    pass
+
+
+# Units used today by this app process. YouTube resets at midnight Pacific time;
+# this counter resets at local midnight, so it is an estimate, not YouTube's own figure.
+_usage = {"day": None, "units": 0}
+
+
+def units_used():
+    if _usage["day"] != date.today():
+        _usage.update(day=date.today(), units=0)
+    return _usage["units"]
+
+
+def budget_left():
+    return max(YOUTUBE_DAILY_BUDGET - units_used(), 0)
 
 
 def _get(endpoint, **params):
     if not YOUTUBE_API_KEY:
         raise ValueError("YouTube API key is missing. Add YOUTUBE_API_KEY to backend\\.env")
+    cost = COST.get(endpoint, 1)
+    if units_used() + cost > YOUTUBE_DAILY_BUDGET:
+        raise QuotaExceeded(f"Daily YouTube budget of {YOUTUBE_DAILY_BUDGET:,} units reached. Try again tomorrow.")
+    _usage["units"] += cost
     params["key"] = YOUTUBE_API_KEY
     url = API + endpoint + "?" + urllib.parse.urlencode(params)
     try:
         with urllib.request.urlopen(url, timeout=20) as res:
             return json.load(res)
     except urllib.error.HTTPError as exc:
+        reason, message = "", str(exc)
         try:
-            message = json.load(exc)["error"]["message"]
+            err = json.load(exc)["error"]
+            message = err["message"]
+            reason = (err.get("errors") or [{}])[0].get("reason", "")
         except Exception:
-            message = str(exc)
+            pass
+        if reason in ("quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded"):
+            _usage["units"] = YOUTUBE_DAILY_BUDGET  # stop calling for the rest of the day
+            raise QuotaExceeded("YouTube's daily quota is used up. Try again tomorrow.") from exc
+        if reason == "commentsDisabled":
+            raise CommentsDisabled(message) from exc
         raise ValueError(f"YouTube error: {message}") from exc
     except urllib.error.URLError as exc:
         raise ValueError(f"Can't reach YouTube: {exc.reason}") from exc
@@ -200,16 +238,61 @@ def latest_videos(uploads_playlist, max_videos=MAX_VIDEOS):
 
     videos = []
     for i in range(0, len(ids), 50):
-        data = _get("videos", part="snippet,statistics,contentDetails", id=",".join(ids[i:i + 50]))
+        # Extra parts cost nothing extra: videos.list is 1 unit per call.
+        data = _get("videos", part="snippet,statistics,contentDetails,liveStreamingDetails", id=",".join(ids[i:i + 50]))
         for v in data.get("items", []):
             stats = v.get("statistics", {})
+            snippet = v["snippet"]
+            if snippet.get("liveBroadcastContent") in ("live", "upcoming"):
+                continue  # not finished yet; its numbers would be misleading
+            thumbs = snippet.get("thumbnails", {})
             videos.append({
-                "title": v["snippet"]["title"].strip(),
+                "title": snippet["title"].strip(),
                 "link": f"https://www.youtube.com/watch?v={v['id']}",
-                "published_at": datetime.fromisoformat(v["snippet"]["publishedAt"].replace("Z", "+00:00")),
+                "published_at": datetime.fromisoformat(snippet["publishedAt"].replace("Z", "+00:00")),
+                "thumbnail": (thumbs.get("medium") or thumbs.get("high") or thumbs.get("default") or {}).get("url"),
+                "tags": [t.strip() for t in snippet.get("tags", [])[:30] if t.strip()],
+                "was_live": "liveStreamingDetails" in v,
                 "views": int(stats.get("viewCount", 0)),
                 "likes": int(stats["likeCount"]) if "likeCount" in stats else None,
                 "comments": int(stats["commentCount"]) if "commentCount" in stats else None,
                 "duration_seconds": parse_duration(v["contentDetails"].get("duration")),
             })
     return videos
+
+
+QUESTION_START = re.compile(
+    r"^(how|what|why|when|where|which|who|can|could|should|would|is|are|does|do|did|will|any)\b", re.IGNORECASE
+)
+
+
+def looks_like_question(text):
+    """English-only heuristic: contains '?' or starts with a question word. No links, sensible length."""
+    t = text.strip()
+    if not 15 <= len(t) <= 300 or re.search(r"https?://|www\.", t):
+        return False
+    return "?" in t or bool(QUESTION_START.match(t))
+
+
+def comment_questions(video_id, max_results=50):
+    """Top public comments on one video that look like questions (1 unit).
+    Only the text, like count and date are kept; commenter names are not stored."""
+    data = _get("commentThreads", part="snippet", videoId=video_id, maxResults=max_results,
+                order="relevance", textFormat="plainText")
+    out = []
+    for item in data.get("items", []):
+        c = item["snippet"]["topLevelComment"]["snippet"]
+        text = (c.get("textOriginal") or c.get("textDisplay") or "").strip()
+        if looks_like_question(text):
+            out.append({
+                "comment_id": item["id"],
+                "text": text,
+                "likes": int(c.get("likeCount", 0)),
+                "published_at": datetime.fromisoformat(c["publishedAt"].replace("Z", "+00:00")),
+            })
+    return out
+
+
+def video_id(link):
+    m = re.search(r"[?&]v=([\w-]{6,})", link)
+    return m.group(1) if m else None

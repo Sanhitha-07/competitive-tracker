@@ -1,14 +1,28 @@
+import os
 from pathlib import Path
 
 from sqlalchemy import inspect, text
 from sqlmodel import Session, SQLModel, create_engine
 
 # Always the tracker.db next to this file, whichever folder the app is started from.
-DB_PATH = Path(__file__).with_name("tracker.db")
+# Tests set TRACKER_DB to use a throwaway database instead.
+DB_PATH = Path(os.environ.get("TRACKER_DB") or Path(__file__).with_name("tracker.db"))
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 
-# Columns added after the first version. Existing databases get them automatically.
-NEW_COLUMNS = {"competitor": {"thumbnail": "VARCHAR"}}
+# Columns added after the first version. Existing databases get them automatically
+# (new tables are created by create_all; only new columns on old tables need this).
+NEW_COLUMNS = {
+    "competitor": {"thumbnail": "VARCHAR", "last_fetched_at": "DATETIME"},
+    "organization": {
+        "creator_type": "VARCHAR", "niche": "VARCHAR", "audience": "VARCHAR",
+        "goals": "JSON", "topics": "JSON", "formats": "JSON", "platforms": "JSON",
+        "timezone": "VARCHAR", "time_sensitive": "BOOLEAN",
+    },
+    "post": {
+        "thumbnail": "VARCHAR", "format": "VARCHAR", "tags": "JSON",
+        "metrics_updated_at": "DATETIME", "questions_checked_at": "DATETIME",
+    },
+}
 
 
 def create_tables():

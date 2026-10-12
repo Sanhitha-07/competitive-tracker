@@ -1,73 +1,121 @@
-"""Read every account of an organization (RSS feeds and YouTube channels) and save new stories/videos."""
-import calendar
-from datetime import datetime, timezone
+"""Read every account of an organization through its platform connector and save new posts,
+updated public metrics, timestamped snapshots (history) and audience questions."""
+from datetime import datetime, timedelta, timezone
 
-import feedparser
 from sqlmodel import Session, select
 
+import connectors
 import youtube
-from models import Competitor, Post
+from models import AccountSnapshot, AudienceQuestion, Competitor, MetricSnapshot, Post
+
+SNAPSHOT_EVERY = timedelta(hours=6)       # at most one metric snapshot per post per 6 hours
+QUESTION_VIDEOS_PER_ACCOUNT = 3           # videos whose comments are read per account per refresh
+QUESTION_RECHECK = timedelta(days=7)      # don't re-read the same video's comments for a week
+QUESTION_MIN_BUDGET = 200                 # keep this many YouTube units for the next refresh
 
 
-def read_feed(rss_url):
-    """Return a list of {title, link, published_at} from one RSS feed. Raises ValueError if it isn't a feed."""
-    feed = feedparser.parse(rss_url, agent="Mozilla/5.0 CompetitiveTracker")
-    if not feed.entries:
-        reason = getattr(feed, "bozo_exception", None)
-        raise ValueError(f"No stories found. Is this an RSS feed link? {reason or ''}".strip())
-    stories = []
-    for e in feed.entries:
-        if not e.get("title") or not e.get("link"):
-            continue
-        t = e.get("published_parsed") or e.get("updated_parsed")
-        # Always UTC, with timezone info (the database requires it).
-        when = datetime.fromtimestamp(calendar.timegm(t), tz=timezone.utc) if t else datetime.now(timezone.utc)
-        stories.append({"title": e.title.strip(), "link": e.link, "published_at": when})
-    return stories
+def _utc(dt):
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
-def read_youtube(competitor: Competitor):
-    channel = youtube.find_channel(competitor.channel_id or competitor.source)
-    competitor.channel_id = channel["channel_id"]
-    competitor.subscribers = channel["subscribers"]
-    competitor.thumbnail = channel["thumbnail"]
-    return youtube.latest_videos(channel["uploads_playlist"])
-
-
-def _save(session: Session, competitor: Competitor, items):
-    """Insert new items; for videos already saved, update views/likes/comments (they change over time)."""
+def _save(session: Session, competitor: Competitor, items, now):
+    """Insert new items; for items already saved, update metrics and metadata (they change over time)."""
     existing = {p.link: p for p in session.exec(select(Post).where(Post.competitor_id == competitor.id)).all()}
-    added = 0
+    last_snap = {}
+    if existing:
+        ids = [p.id for p in existing.values()]
+        for snap in session.exec(select(MetricSnapshot).where(MetricSnapshot.post_id.in_(ids))).all():
+            if snap.post_id not in last_snap or _utc(snap.captured_at) > _utc(last_snap[snap.post_id]):
+                last_snap[snap.post_id] = snap.captured_at
+
+    added, saved = 0, []
     for item in {i["link"]: i for i in items}.values():  # same link twice in one read
-        old = existing.get(item["link"])
-        if old:
-            if competitor.platform == "youtube":
-                old.views, old.likes, old.comments = item["views"], item["likes"], item["comments"]
-                session.add(old)
+        post = existing.get(item["link"])
+        if post:
+            for field in ("views", "likes", "comments", "duration_seconds", "thumbnail", "tags", "format"):
+                if field in item:
+                    setattr(post, field, item[field])
+        else:
+            post = Post(competitor_id=competitor.id, platform=competitor.platform, **item)
+            added += 1
+        if item.get("views") is not None:
+            post.metrics_updated_at = now
+        session.add(post)
+        saved.append(post)
+    session.flush()  # gives new posts their ids
+
+    snapshots = 0
+    for post in saved:
+        if post.views is None:
             continue
-        session.add(Post(competitor_id=competitor.id, platform=competitor.platform, **item))
-        added += 1
-    return added
+        last = last_snap.get(post.id)
+        if last is None or now - _utc(last) >= SNAPSHOT_EVERY:
+            session.add(MetricSnapshot(post_id=post.id, captured_at=now, views=post.views,
+                                       likes=post.likes, comments=post.comments))
+            snapshots += 1
+    session.add(AccountSnapshot(competitor_id=competitor.id, captured_at=now,
+                                subscribers=competitor.subscribers, posts_tracked=len(existing) + added))
+    return added, snapshots
 
 
-def fetch_org(session: Session, org_id: int):
+def _collect_questions(session, connector, competitor, now):
+    """Read comments on a few of the account's most-viewed recent videos and keep the questions."""
+    if not connector.supports_questions or youtube.budget_left() < QUESTION_MIN_BUDGET:
+        return 0
+    since = now - timedelta(days=30)
+    posts = session.exec(select(Post).where(Post.competitor_id == competitor.id)).all()
+    candidates = sorted(
+        (p for p in posts if _utc(p.published_at) >= since and (p.comments or 0) > 0
+         and (p.questions_checked_at is None or now - _utc(p.questions_checked_at) >= QUESTION_RECHECK)),
+        key=lambda p: p.views or 0, reverse=True,
+    )[:QUESTION_VIDEOS_PER_ACCOUNT]
+    found = 0
+    for post in candidates:
+        known = {q.comment_id for q in session.exec(select(AudienceQuestion).where(AudienceQuestion.post_id == post.id)).all()}
+        for q in connector.questions(post):
+            if q["comment_id"] not in known:
+                session.add(AudienceQuestion(post_id=post.id, **q))
+                found += 1
+        post.questions_checked_at = now
+        session.add(post)
+    return found
+
+
+def fetch_org(session: Session, org_id: int, now=None):
     """Read every account of one organization. One bad account doesn't stop the others."""
-    results, added_total = [], 0
+    now = now or datetime.now(timezone.utc)
+    results, added_total, quota_hit = [], 0, None
     accounts = session.exec(select(Competitor).where(Competitor.org_id == org_id)).all()
     for c in accounts:
         try:
-            items = read_youtube(c) if c.platform == "youtube" else read_feed(c.source)
-            added = _save(session, c, items)
+            connector = connectors.get(c.platform)
+            items = connector.fetch(c)
+            added, snapshots = _save(session, c, items, now)
+            questions = 0
+            if not quota_hit:
+                try:
+                    questions = _collect_questions(session, connector, c, now)
+                except youtube.QuotaExceeded as exc:
+                    quota_hit = str(exc)  # posts are saved; only the optional comment check stops
             c.last_error = None
+            c.last_fetched_at = now
             session.add(c)
             session.commit()
         except Exception as exc:
             session.rollback()
+            if isinstance(exc, youtube.QuotaExceeded):
+                quota_hit = str(exc)
             c.last_error = str(exc)[:300]
             session.add(c)
             session.commit()
             results.append({"account": c.name, "platform": c.platform, "added": 0, "error": c.last_error})
             continue
-        results.append({"account": c.name, "platform": c.platform, "added": added, "found": len(items), "error": None})
+        results.append({"account": c.name, "platform": c.platform, "added": added, "found": len(items),
+                        "snapshots": snapshots, "questions": questions, "error": None})
         added_total += added
-    return {"added": added_total, "accounts": results}
+    return {
+        "added": added_total,
+        "accounts": results,
+        "quota": {"youtube_units_used_today": youtube.units_used(), "youtube_units_left": youtube.budget_left(),
+                  "warning": quota_hit},
+    }

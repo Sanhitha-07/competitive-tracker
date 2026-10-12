@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { addAccount, compact, deleteAccount, getAccounts, PLATFORM_LABEL } from "../api";
+import { addAccount, ago, compact, deleteAccount, getAccounts, PLATFORM_LABEL } from "../api";
 import ChannelInput from "../components/ChannelInput";
 
 const EMPTY = { name: "", platform: "youtube", source: "", is_us: false };
 
-export default function Accounts({ orgId, onChanged }) {
+export default function Accounts({ orgId, onChanged, platforms }) {
   const [list, setList] = useState([]);
   const [error, setError] = useState("");
   const [form, setForm] = useState(EMPTY);
@@ -67,7 +67,10 @@ export default function Accounts({ orgId, onChanged }) {
       <div className="panel-head">
         <div>
           <h2>Accounts</h2>
-          <p className="muted">Our own accounts and the competitors we compare against. Use the same name for one competitor's website and YouTube channel.</p>
+          <p className="muted">
+            Your own accounts (tick "Ours") and the competitors you compare against. Use the same name for one competitor's accounts on different platforms.
+            {platforms?.planned?.length > 0 && ` Not connected yet: ${platforms.planned.map((p) => p.label).join(", ")} (see Workspace settings for why).`}
+          </p>
         </div>
       </div>
 
@@ -75,13 +78,14 @@ export default function Accounts({ orgId, onChanged }) {
         <label className="field">
           <span>Platform</span>
           <select id="acc-platform" value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })}>
-            <option value="youtube">YouTube channel</option>
-            <option value="rss">News website (RSS)</option>
+            {(platforms?.supported || [{ id: "youtube", label: "YouTube" }, { id: "rss", label: "Website / blog (RSS)" }]).map((p) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
           </select>
         </label>
         <label className="field">
           <span>Name</span>
-          <input id="acc-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. NDTV" />
+          <input id="acc-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. the creator or brand name" />
         </label>
         <div className="field grow">
           <label htmlFor="acc-source">{isYT ? "YouTube channel (name, @handle or link)" : "RSS link"}</label>
@@ -118,7 +122,7 @@ export default function Accounts({ orgId, onChanged }) {
       {error ? (
         <div className="empty"><b>Accounts not available</b><span>{error}</span></div>
       ) : list.length === 0 ? (
-        <div className="empty"><b>No accounts yet</b><span>Add our own account first (tick "Ours"), then 3–5 competitors.</span></div>
+        <div className="empty"><b>No accounts yet</b><span>Add your own account first (tick "Ours"), then 3–5 competitors.</span></div>
       ) : (
         <div className="table-wrap">
           <table>
@@ -138,7 +142,7 @@ export default function Accounts({ orgId, onChanged }) {
                   <td><span className={`plat ${a.platform}`}>{PLATFORM_LABEL[a.platform]}</span></td>
                   <td className="link-cell">{a.source}</td>
                   <td className="num">{a.platform === "youtube" ? compact(a.subscribers) : "–"}</td>
-                  <td>{a.last_error ? <span className="pill bad" title={a.last_error}>Last refresh failed</span> : <span className="muted small">OK</span>}</td>
+                  <td>{a.last_error ? <span className="pill bad" title={a.last_error}>Last refresh failed</span> : <span className="muted small">{a.last_fetched_at ? `Refreshed ${ago(a.last_fetched_at)}` : "Not refreshed yet"}</span>}</td>
                   <td><button className="btn ghost small-btn" onClick={() => onDelete(a.id)}>Remove</button></td>
                 </tr>
               ))}
