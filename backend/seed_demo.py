@@ -70,6 +70,7 @@ with Session(engine) as s:
             if platform == "youtube":
                 ch = youtube.find_channel(source)
                 account.channel_id, account.subscribers = ch["channel_id"], ch["subscribers"]
+                account.thumbnail = ch["thumbnail"]
             s.add(account)
         s.commit()
 

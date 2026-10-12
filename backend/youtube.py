@@ -4,6 +4,7 @@ Quota: about 3-5 units per channel per refresh (the free limit is 10,000 units a
 """
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -110,13 +111,69 @@ def find_channel(text):
     if not data.get("items"):
         raise ValueError(f'YouTube channel "{text}" not found. Check the handle or link.')
     ch = data["items"][0]
+    info = _channel_info(ch)
+    info["uploads_playlist"] = ch["contentDetails"]["relatedPlaylists"]["uploads"]
+    return info
+
+
+def _channel_info(ch):
+    """Name, handle, logo and subscribers from one channels.list item."""
     stats = ch.get("statistics", {})
+    thumbs = ch["snippet"].get("thumbnails", {})
+    logo = (thumbs.get("default") or thumbs.get("medium") or {}).get("url")
     return {
         "channel_id": ch["id"],
         "title": ch["snippet"]["title"],
+        "handle": ch["snippet"].get("customUrl"),
+        "thumbnail": logo,
         "subscribers": None if stats.get("hiddenSubscriberCount") else int(stats.get("subscriberCount", 0)),
-        "uploads_playlist": ch["contentDetails"]["relatedPlaylists"]["uploads"],
     }
+
+
+# ---- Suggestions while typing ----
+
+_suggest_cache = {}  # query -> (time, results); repeated searches cost nothing
+
+
+def _squash(text):
+    """'Prerna Malha' / '@prerna.malha' -> 'prernamalha', for loose name matching."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+_CACHE_SECONDS = 6 * 3600
+
+
+def suggest_channels(query, limit=8):
+    """Channels matching what the user is typing: an exact handle match first (1 unit), then a search (100 units)."""
+    q = query.strip().lstrip("@")
+    if len(q) < 3:
+        return []
+    key = q.lower()
+    cached = _suggest_cache.get(key)
+    if cached and time.time() - cached[0] < _CACHE_SECONDS:
+        return cached[1]
+
+    exact_ids = []
+    if re.fullmatch(r"[\w.\-]+", q):
+        exact = _get("channels", part="id", forHandle="@" + q)
+        exact_ids = [i["id"] for i in exact.get("items", [])]
+    # A search costs 100 units whether it returns 1 or 10 results, so ask for 10.
+    found = _get("search", part="snippet", type="channel", maxResults=10, q=q)
+    ids = exact_ids + [i["snippet"]["channelId"] for i in found.get("items", []) if i["snippet"]["channelId"] not in exact_ids]
+
+    results = []
+    if ids:
+        data = _get("channels", part="snippet,statistics", id=",".join(ids[:50]))
+        by_id = {ch["id"]: _channel_info(ch) for ch in data.get("items", [])}
+        typed = _squash(q)
+
+        def rank(c):
+            name_matches = typed in _squash(c["title"]) or typed in _squash(c["handle"] or "")
+            return (not name_matches, -(c["subscribers"] or 0))
+
+        # Exact handle first; then channels whose name/handle contains what was typed; then the biggest.
+        others = sorted((by_id[i] for i in ids if i in by_id and i not in exact_ids), key=rank)
+        results = ([by_id[i] for i in exact_ids if i in by_id] + others)[:limit]
+    _suggest_cache[key] = (time.time(), results)
+    return results
 
 
 def parse_duration(iso):

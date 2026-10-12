@@ -45,6 +45,9 @@ export const getAccounts = (orgId) => request(`/organizations/${orgId}/accounts`
 export const addAccount = (orgId, data) => request(`/organizations/${orgId}/accounts`, { method: "POST", ...json(data) });
 export const deleteAccount = (orgId, id) => request(`/organizations/${orgId}/accounts/${id}`, { method: "DELETE" });
 
+// YouTube channels matching what the user types (logo, name, handle, subscribers)
+export const suggestChannels = (q) => request(`/youtube/suggest?q=${encodeURIComponent(q)}`);
+
 // Refresh and results
 export const fetchNews = (orgId) => request(`/organizations/${orgId}/fetch`, { method: "POST" });
 export const getResults = (orgId) => request(`/organizations/${orgId}/results`);

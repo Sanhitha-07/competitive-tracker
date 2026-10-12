@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { addAccount, compact, deleteAccount, getAccounts, PLATFORM_LABEL } from "../api";
+import ChannelInput from "../components/ChannelInput";
 
 const EMPTY = { name: "", platform: "youtube", source: "", is_us: false };
 
@@ -82,15 +83,30 @@ export default function Accounts({ orgId, onChanged }) {
           <span>Name</span>
           <input id="acc-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. NDTV" />
         </label>
-        <label className="field grow">
-          <span>{isYT ? "YouTube handle or channel link" : "RSS link"}</span>
-          <input
-            id="acc-source"
-            value={form.source}
-            onChange={(e) => setForm({ ...form, source: e.target.value })}
-            placeholder={isYT ? "@ndtv" : "https://…/rss"}
-          />
-        </label>
+        <div className="field grow">
+          <label htmlFor="acc-source">{isYT ? "YouTube channel (name, @handle or link)" : "RSS link"}</label>
+          {isYT ? (
+            <ChannelInput
+              id="acc-source"
+              value={form.source}
+              onChange={(source) => setForm((f) => ({ ...f, source }))}
+              onPick={(ch) =>
+                setForm((f) => ({
+                  ...f,
+                  source: ch.handle || ch.channel_id,
+                  name: f.name.trim() ? f.name : ch.title,
+                }))
+              }
+            />
+          ) : (
+            <input
+              id="acc-source"
+              value={form.source}
+              onChange={(e) => setForm({ ...form, source: e.target.value })}
+              placeholder="https://…/rss"
+            />
+          )}
+        </div>
         <label className="check">
           <input id="acc-us" type="checkbox" checked={form.is_us} onChange={(e) => setForm({ ...form, is_us: e.target.checked })} />
           Ours
@@ -113,8 +129,11 @@ export default function Accounts({ orgId, onChanged }) {
               {list.map((a) => (
                 <tr key={a.id}>
                   <td>
-                    <b>{a.name}</b>{" "}
-                    {a.is_us ? <span className="pill good">Ours</span> : <span className="pill neutral">Competitor</span>}
+                    <span className="acc-name">
+                      {a.thumbnail ? <img src={a.thumbnail} alt="" className="logo" /> : <span className={`logo placeholder ${a.platform}`} />}
+                      <b>{a.name}</b>
+                      {a.is_us ? <span className="pill good">Ours</span> : <span className="pill neutral">Competitor</span>}
+                    </span>
                   </td>
                   <td><span className={`plat ${a.platform}`}>{PLATFORM_LABEL[a.platform]}</span></td>
                   <td className="link-cell">{a.source}</td>

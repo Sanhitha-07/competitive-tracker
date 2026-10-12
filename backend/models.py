@@ -31,6 +31,7 @@ class Competitor(SQLModel, table=True):
     source: str  # RSS feed link, or the YouTube handle / channel link the user typed
     is_us: bool = False
     channel_id: Optional[str] = None  # YouTube channel ID, filled in automatically
+    thumbnail: Optional[str] = None   # YouTube channel logo URL
     subscribers: Optional[int] = None
     last_error: Optional[str] = None
 

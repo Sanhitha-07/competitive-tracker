@@ -156,6 +156,25 @@ tr.market-row td { background: var(--bg); border-top: 2px solid var(--line); }
 .sugg.good { border-left-color: var(--good); background: var(--good-soft); }
 .sugg.info { border-left-color: var(--accent); background: var(--accent-soft); }
 
+/* Channel search with suggestions */
+.field label { font-size: 13px; font-weight: 600; color: var(--muted); }
+.combo { position: relative; }
+.combo input { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 9px 36px 9px 12px; color: var(--fg); font-weight: 400; font-size: 15px; }
+.combo-spinner { position: absolute; right: 12px; top: 50%; width: 16px; height: 16px; margin-top: -8px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .combo-spinner { animation-duration: 2s; } }
+.combo-list { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 4px); margin: 0; padding: 6px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(30, 20, 60, .12); max-height: 340px; overflow-y: auto; }
+.combo-item { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.combo-item.active { background: var(--accent-soft); }
+.combo-text { display: flex; flex-direction: column; min-width: 0; font-weight: 400; color: var(--fg); }
+.combo-text b, .combo-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combo-msg { padding: 10px; font-weight: 400; font-size: 14px; color: var(--muted); }
+.logo { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; flex: none; background: var(--accent-soft); }
+.logo.placeholder.rss { background: #e8f0fd; }
+.logo.placeholder.youtube { background: #fde8e8; }
+.acc-name { display: inline-flex; align-items: center; gap: 10px; }
+.acc-name .logo { width: 28px; height: 28px; }
+
 /* Popup */
 .overlay { position: fixed; inset: 0; background: rgba(20, 14, 40, .45); display: grid; place-items: center; padding: 16px; z-index: 10; }
 .popup { background: var(--surface); border-radius: 16px; width: min(620px, 100%); max-height: 90vh; overflow: auto; padding: 22px; display: flex; flex-direction: column; gap: 16px; }

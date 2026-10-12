@@ -30,6 +30,7 @@ def read_youtube(competitor: Competitor):
     channel = youtube.find_channel(competitor.channel_id or competitor.source)
     competitor.channel_id = channel["channel_id"]
     competitor.subscribers = channel["subscribers"]
+    competitor.thumbnail = channel["thumbnail"]
     return youtube.latest_videos(channel["uploads_playlist"])
 
 

@@ -120,6 +120,7 @@ def add_account(org_id: int, data: AccountIn, session: Session = Depends(get_ses
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         account.channel_id, account.subscribers = channel["channel_id"], channel["subscribers"]
+        account.thumbnail = channel["thumbnail"]
         duplicate = session.exec(same_org.where(Competitor.channel_id == account.channel_id)).first()
     else:
         duplicate = session.exec(same_org.where(Competitor.source == source)).first()
@@ -140,6 +141,15 @@ def remove_account(org_id: int, account_id: int, session: Session = Depends(get_
     session.exec(delete(Post).where(Post.competitor_id == account_id))
     session.delete(account)
     session.commit()
+
+
+@app.get("/youtube/suggest")
+def youtube_suggest(q: str):
+    """Channels matching what the user is typing, with logo, handle and subscribers."""
+    try:
+        return youtube.suggest_channels(q)
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
 
 
 def _label(platform):
