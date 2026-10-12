@@ -1,0 +1,8 @@
+# Secrets and local data - never commit these
+backend/.env
+backend/tracker.db
+backend/env/
+backend/__pycache__/
+backend/.pytest_cache/
+frontend/node_modules/
+frontend/dist/
