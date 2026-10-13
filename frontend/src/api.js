@@ -57,30 +57,63 @@ export const saveConfig = (orgId, data) => request(`/organizations/${orgId}/conf
 // Accounts: ours and competitors', on any supported platform
 export const getAccounts = (orgId) => request(`/organizations/${orgId}/accounts`);
 export const addAccount = (orgId, data) => request(`/organizations/${orgId}/accounts`, { method: "POST", ...json(data) });
+export const editAccount = (orgId, id, data) => request(`/organizations/${orgId}/accounts/${id}`, { method: "PATCH", ...json(data) });
 export const deleteAccount = (orgId, id) => request(`/organizations/${orgId}/accounts/${id}`, { method: "DELETE" });
+
+// Instagram, Facebook and X sign-in for a workspace (tokens stay on the server)
+export const getIntegrations = (orgId) => request(`/organizations/${orgId}/integrations`);
+export const connectPlatform = (orgId, platform) => request(`/organizations/${orgId}/integrations/${platform}/connect`, { method: "POST" });
+export const choosePage = (orgId, platform, pageId) =>
+  request(`/organizations/${orgId}/integrations/${platform}/page`, { method: "POST", ...json({ page_id: pageId }) });
+export const disconnectPlatform = (orgId, platform) => request(`/organizations/${orgId}/integrations/${platform}`, { method: "DELETE" });
+
+// Competitor Content DNA (one account, or all of them) and the change feed
+export const getDna = (orgId, accountId) => request(`/organizations/${orgId}/dna${qs({ account_id: accountId })}`);
+export const getChanges = (orgId, status) => request(`/organizations/${orgId}/changes${qs({ status })}`);
+export const updateChange = (orgId, id, status) =>
+  request(`/organizations/${orgId}/changes/${id}`, { method: "PATCH", ...json({ status }) });
 
 // YouTube channels matching what the user types (logo, name, handle, subscribers)
 export const suggestChannels = (q) => request(`/youtube/suggest?q=${encodeURIComponent(q)}`);
+// Instagram / Facebook / X profiles matching what the user types (only once the platform is connected)
+export const suggestProfiles = (orgId, platform, q) =>
+  request(`/organizations/${orgId}/profiles/${platform}/suggest?q=${encodeURIComponent(q)}`);
 
 // Refresh and results
 export const fetchNews = (orgId) => request(`/organizations/${orgId}/fetch`, { method: "POST" });
 export const getResults = (orgId) => request(`/organizations/${orgId}/results`);
-export const getTopics = (orgId) => request(`/organizations/${orgId}/topics`);
+export const getTopics = (orgId, filters = {}) => request(`/organizations/${orgId}/topics${qs(filters)}`);
 export const getContent = (orgId, filters) => request(`/organizations/${orgId}/content${qs(filters)}`);
+export const getDashboard = (orgId, filters = {}) => request(`/organizations/${orgId}/dashboard${qs(filters)}`);
 export const getHistory = (orgId, days = 90) => request(`/organizations/${orgId}/history?days=${days}`);
 export const getPostHistory = (orgId, postId) => request(`/organizations/${orgId}/posts/${postId}/history`);
+
+// Saved collections of public posts (Content Explorer)
+export const saveToCollection = (orgId, collection, postId) =>
+  request(`/organizations/${orgId}/collections/items`, { method: "POST", ...json({ collection, post_id: postId }) });
+export const removeFromCollection = (orgId, itemId) =>
+  request(`/organizations/${orgId}/collections/items/${itemId}`, { method: "DELETE" });
 
 // Opportunities: recommendation -> brief -> MediaOps draft -> scheduled -> published -> evaluated
 const opp = (orgId, id = "") => `/organizations/${orgId}/opportunities${id !== "" ? `/${id}` : ""}`;
 export const getOpportunities = (orgId) => request(opp(orgId));
-export const createOpportunity = (orgId, key, action = "save") =>
-  request(opp(orgId), { method: "POST", ...json({ key, action }) });
+// source: a recommendation key (string), or {topic} / {post_id} to build the evidence on demand
+export const createOpportunity = (orgId, source, action = "save") =>
+  request(opp(orgId), { method: "POST", ...json({ ...(typeof source === "string" ? { key: source } : source), action }) });
 export const updateOpportunity = (orgId, id, data) => request(opp(orgId, id), { method: "PATCH", ...json(data) });
 export const regenerateBrief = (orgId, id) => request(`${opp(orgId, id)}/brief`, { method: "POST" });
 export const sendToMediaOps = (orgId, id, platforms) =>
   request(`${opp(orgId, id)}/mediaops`, { method: "POST", ...json({ platforms }) });
 export const evaluateOpportunity = (orgId, id) => request(`${opp(orgId, id)}/evaluate`, { method: "POST" });
 export const calendarUrl = (orgId, id) => `${API_URL}${opp(orgId, id)}/calendar.ics`;
+
+// Strategy experiments (the list also carries the strategy simulator)
+const exp = (orgId, id = "") => `/organizations/${orgId}/experiments${id !== "" ? `/${id}` : ""}`;
+export const getExperiments = (orgId) => request(exp(orgId));
+export const createExperiment = (orgId, data) => request(exp(orgId), { method: "POST", ...json(data) });
+export const updateExperiment = (orgId, id, data) => request(exp(orgId, id), { method: "PATCH", ...json(data) });
+export const evaluateExperiment = (orgId, id) => request(`${exp(orgId, id)}/evaluate`, { method: "POST" });
+export const deleteExperiment = (orgId, id) => request(exp(orgId, id), { method: "DELETE" });
 
 // ---- Formatting helpers ----
 
@@ -137,12 +170,27 @@ export function period(hours) {
   return hours >= 48 ? `the last ${Math.round(hours / 24)} days` : `the last ${hours} hours`;
 }
 
-export const PLATFORM_LABEL = { rss: "Website", youtube: "YouTube" };
+export const PLATFORM_LABEL = { rss: "Website", youtube: "YouTube", instagram: "Instagram", facebook: "Facebook", x: "X" };
 export const FORMAT_LABEL = {
   short: "Short", video: "Video", long: "Long-form", live: "Live stream", article: "Article",
-  image: "Image", podcast: "Podcast", newsletter: "Newsletter",
+  image: "Image", podcast: "Podcast", newsletter: "Newsletter", reel: "Reel", carousel: "Carousel", post: "Post",
 };
 export const STATUS_LABEL = {
   saved: "Saved", brief: "Brief ready", in_mediaops: "In MediaOps", scheduled: "Scheduled",
-  published: "Published", evaluated: "Measured", dismissed: "Dismissed",
+  published: "Published", evaluated: "Measured", completed: "Completed", dismissed: "Dismissed",
 };
+// Shown wherever Instagram, Facebook or X has no credentials yet (setup details: SOCIAL_SETUP.md).
+export const NOT_CONFIGURED_TEXT = "Integration is not configured yet. Contact your administrator to enable it.";
+export const PRIORITY_TONE = { high: "bad", medium: "warn", low: "neutral" };
+
+// A number, or "not available" when the data doesn't have it (never shown as 0).
+export function num(n, fmt = compact) {
+  return n === null || n === undefined ? "Not available" : fmt(n);
+}
+export function ratio(r) {
+  return r === null || r === undefined ? "–" : `${r}×`;
+}
+export function ratioTone(r) {
+  if (r === null || r === undefined) return "";
+  return r >= 1.2 ? "good-text" : r < 0.8 ? "bad-text" : "";
+}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { toIST } from "../api";
+import { toIST, tzLabel } from "../api";
 
 const PLATFORMS = ["X", "Facebook", "YouTube", "LinkedIn", "Instagram"];
 
@@ -16,7 +16,7 @@ export default function PackagePopup({ gap, onClose }) {
     `Priority: ${gap.priority}`,
     `Platforms: ${platforms.join(", ")}`,
     `Covered by: ${gap.covered_by.join(", ")}`,
-    `First published: ${gap.first_by}, ${toIST(gap.first_published_at)} IST`,
+    `First published: ${gap.first_by}, ${toIST(gap.first_published_at)} (${tzLabel()})`,
     "Sources (for reference only, do not copy):",
     ...gap.links.map((l) => `- ${l}`),
   ].join("\n");

@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 import connectors
+import integrations
+import social_http
 import youtube
 from models import AccountSnapshot, AudienceQuestion, Competitor, MetricSnapshot, Post
 
@@ -36,13 +38,13 @@ def _save(session: Session, competitor: Competitor, items, now):
     for item in {i["link"]: i for i in items}.values():  # same link twice in one read
         post = existing.get(item["link"])
         if post:
-            for field in ("views", "likes", "comments", "duration_seconds", "thumbnail", "tags", "format"):
+            for field in ("views", "likes", "comments", "shares", "duration_seconds", "thumbnail", "tags", "format", "title"):
                 if field in item:
                     setattr(post, field, item[field])
         else:
             post = Post(competitor_id=competitor.id, platform=competitor.platform, **item)
             added += 1
-        if item.get("views") is not None:
+        if any(item.get(k) is not None for k in ("views", "likes", "comments")):
             post.metrics_updated_at = now
         session.add(post)
         saved.append(post)
@@ -50,8 +52,8 @@ def _save(session: Session, competitor: Competitor, items, now):
 
     snapshots = 0
     for post in saved:
-        if post.views is None:
-            continue
+        if post.views is None and post.likes is None and post.comments is None:
+            continue  # nothing to record (e.g. RSS articles)
         last = last_snap.get(post.id)
         if last is None or now - _utc(last) >= SNAPSHOT_EVERY:
             session.add(MetricSnapshot(post_id=post.id, captured_at=now, views=post.views,
@@ -117,14 +119,30 @@ def _collect_questions(session, connector, competitor, now):
 
 
 def fetch_org(session: Session, org_id: int, now=None):
-    """Read every account of one organization. One bad account doesn't stop the others."""
+    """Read every account of one organization. One bad account doesn't stop the others.
+    Instagram / Facebook / X accounts are skipped (no request made) until the platform is configured
+    and connected for this workspace; an expired token or rate limit stops only that platform."""
     now = now or datetime.now(timezone.utc)
     results, added_total, quota_hit = [], 0, None
     accounts = session.exec(select(Competitor).where(Competitor.org_id == org_id)).all()
+    contexts, stopped = {}, {}  # platform -> credentials; platform -> why it's stopped this refresh
     for c in accounts:
         try:
             connector = connectors.get(c.platform)
-            items = connector.fetch(c)
+        except ValueError as exc:
+            results.append({"account": c.name, "platform": c.platform, "added": 0, "error": str(exc)})
+            continue
+        ctx = None
+        if getattr(connector, "requires_connection", False):
+            if c.platform not in contexts:
+                contexts[c.platform] = integrations.context(session, org_id, c.platform)
+            ctx = contexts[c.platform]
+            if ctx is None or c.platform in stopped:
+                reason = stopped.get(c.platform) or integrations.not_ready_reason(session, org_id, c.platform)
+                results.append({"account": c.name, "platform": c.platform, "added": 0, "error": None, "skipped": reason})
+                continue
+        try:
+            items = connector.fetch(c, ctx) if ctx is not None else connector.fetch(c)
             added, snapshots = _save(session, c, items, now)
             questions = updated_older = 0
             if not quota_hit:
@@ -141,6 +159,13 @@ def fetch_org(session: Session, org_id: int, now=None):
             session.rollback()
             if isinstance(exc, youtube.QuotaExceeded):
                 quota_hit = str(exc)
+            if isinstance(exc, social_http.TokenInvalid):
+                conn = integrations.connection(session, org_id, c.platform)
+                if conn:
+                    integrations.mark_invalid(session, conn, str(exc))
+                stopped[c.platform] = str(exc)
+            elif isinstance(exc, social_http.RateLimited):
+                stopped[c.platform] = str(exc)
             c.last_error = str(exc)[:300]
             session.add(c)
             session.commit()

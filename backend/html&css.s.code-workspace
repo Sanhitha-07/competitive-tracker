@@ -1,0 +1,31 @@
+{
+	"folders": [
+		{
+			"path": "../../html&css.s"
+		},
+		{
+			"path": "../../html"
+		},
+		{
+			"path": "../../test"
+		},
+		{
+			"path": "../../folderr"
+		},
+		{
+			"path": "../../modules"
+		},
+		{
+			"path": "../../pymodules"
+		},
+		{
+			"path": "../../react"
+		},
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"liveServer.settings.multiRootWorkspaceName": "test"
+	}
+}

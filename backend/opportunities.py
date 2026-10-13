@@ -17,13 +17,15 @@ from models import MetricSnapshot, Opportunity, Post
 EVAL_AFTER_DAYS = 7
 WITHIN = 0.2  # within ±20% of baseline counts as "about usual"
 
+# "completed" = the user finished with it (e.g. made the content outside the tracker, or after measuring).
 TRANSITIONS = {
-    "saved": {"brief", "in_mediaops", "scheduled", "dismissed"},
-    "brief": {"in_mediaops", "scheduled", "published", "dismissed", "saved"},
-    "in_mediaops": {"scheduled", "published", "dismissed"},
-    "scheduled": {"in_mediaops", "published", "dismissed"},
-    "published": {"evaluated"},
-    "evaluated": set(),
+    "saved": {"brief", "in_mediaops", "scheduled", "dismissed", "completed"},
+    "brief": {"in_mediaops", "scheduled", "published", "dismissed", "saved", "completed"},
+    "in_mediaops": {"scheduled", "published", "dismissed", "completed"},
+    "scheduled": {"in_mediaops", "published", "dismissed", "completed"},
+    "published": {"evaluated", "completed"},
+    "evaluated": {"completed"},
+    "completed": {"saved"},
     "dismissed": {"saved"},
 }
 

@@ -9,10 +9,15 @@ Normalized item: title, link, published_at (UTC), format, thumbnail, tags,
                  views, likes, comments, duration_seconds (None when not available)
 """
 import calendar
+import re
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import feedparser
 
+import meta_api
+import social_http as http
+import x_api
 import youtube
 
 SHORT_MAX_SECONDS = 60       # see the "short" format definition below
@@ -48,11 +53,11 @@ class YouTubeConnector:
     supports_questions = True
     quota_note = "Uses the YouTube Data API daily quota (≈5 units per channel per refresh, 1 per comment check)."
 
-    def resolve(self, source):
+    def resolve(self, source, ctx=None):
         ch = youtube.find_channel(source)
         return {"channel_id": ch["channel_id"], "subscribers": ch["subscribers"], "thumbnail": ch["thumbnail"]}
 
-    def fetch(self, account):
+    def fetch(self, account, ctx=None):
         ch = youtube.find_channel(account.channel_id or account.source)
         account.channel_id, account.subscribers, account.thumbnail = ch["channel_id"], ch["subscribers"], ch["thumbnail"]
         items = []
@@ -90,12 +95,12 @@ class RSSConnector:
     supports_questions = False
     quota_note = None
 
-    def resolve(self, source):
+    def resolve(self, source, ctx=None):
         if not source.lower().startswith(("http://", "https://")):
             raise ValueError("The RSS link must start with http:// or https://")
         return {}
 
-    def fetch(self, account):
+    def fetch(self, account, ctx=None):
         feed = feedparser.parse(account.source, agent="Mozilla/5.0 CompetitiveTracker")
         if not feed.entries:
             reason = getattr(feed, "bozo_exception", None)
@@ -121,19 +126,273 @@ class RSSConnector:
         return []
 
 
-CONNECTORS = {c.id: c for c in (YouTubeConnector(), RSSConnector())}
+METRICS.update({
+    "shares": "Public share count (Facebook shares, X reposts). Left out where the platform doesn't report it.",
+    "x_views": "Views X shows on a post (impressions). Not comparable with YouTube views.",
+})
+
+
+def _clean_caption(text, fallback):
+    """A post's first line, as its title (social posts have captions, not titles)."""
+    first = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+    return (first[:150] + "…") if len(first) > 150 else (first or fallback)
+
+
+def _hashtags(text):
+    return list(dict.fromkeys(t.lstrip("#") for t in re.findall(r"#\w+", text or "")))[:15]
+
+
+def _utc_time(value):
+    return datetime.fromisoformat(value.replace("Z", "+00:00").replace("+0000", "+00:00")).astimezone(timezone.utc)
+
+
+class SocialConnector:
+    """Shared rules for platforms that need a signed-in connection (Instagram, Facebook, X).
+
+    resolve(): without a usable connection the account is saved as Unverified (no API call is made);
+               with one, the platform confirms the profile exists and gives its id.
+    fetch():   needs a connection; the fetcher skips the platform when there isn't one.
+    """
+    requires_connection = True
+    supports_questions = False
+    handle_pattern = None
+    url_hosts = ()
+
+    def parse(self, source):
+        """A handle from '@name', 'name' or a profile link; raises ValueError if it can't be one."""
+        s = (source or "").strip()
+        if re.match(r"^https?://", s, re.I):
+            u = urlparse(s)
+            host = (u.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+            if host not in self.url_hosts:
+                raise ValueError(f"That isn't a {self.label} link.")
+            if host.startswith("facebook") and u.path.rstrip("/") == "/profile.php":
+                s = dict(p.split("=", 1) for p in u.query.split("&") if "=" in p).get("id", "")
+            else:
+                s = (u.path.strip("/").split("/") or [""])[0]
+        s = s.lstrip("@")
+        if not s or not re.fullmatch(self.handle_pattern, s):
+            raise ValueError(f"Enter a {self.label} {self.handle_word} or a link to the profile.")
+        return s
+
+    def questions(self, post):
+        return []
+
+    def _unverified(self, handle):
+        return {"source": handle, "verified": False}
+
+
+class InstagramConnector(SocialConnector):
+    id = "instagram"
+    label = "Instagram"
+    source_label = "Instagram username or profile link"
+    handle_word = "username"
+    handle_pattern = r"[A-Za-z0-9._]{1,30}"
+    url_hosts = ("instagram.com",)
+    metrics = ["posts", "per_week", "likes", "comments"]
+    formats = {"reel": "An Instagram Reel.", "image": "A single photo post.",
+               "carousel": "A post with several photos or videos.", "video": "A video in the feed."}
+    quota_note = "Uses the Meta Graph API (rate-limited per app and per account)."
+
+    def profile_url(self, account):
+        return f"https://www.instagram.com/{account.source}/"
+
+    def resolve(self, source, ctx=None):
+        handle = self.parse(source)
+        if not ctx:
+            return self._unverified(handle)
+        return self._profile(meta_api.ig_profile(ctx.token, ctx.own_id, handle), handle)
+
+    @staticmethod
+    def _profile(profile, handle):
+        return {"source": profile.get("username") or handle, "verified": True, "external_id": profile["id"],
+                "thumbnail": profile.get("profile_picture_url"), "subscribers": profile.get("followers_count"),
+                "display_name": profile.get("name") or profile.get("username") or handle}
+
+    def suggest(self, query, ctx):
+        """Instagram has no name search: look up this exact username (public professional accounts only)."""
+        try:
+            handle = self.parse(query)
+        except ValueError:
+            return "exact", []
+        try:
+            return "exact", [self._profile(meta_api.ig_profile(ctx.token, ctx.own_id, handle), handle)]
+        except http.ApiError as exc:
+            if isinstance(exc, (http.TokenInvalid, http.RateLimited)):
+                raise
+            return "exact", []  # not found, private, or not a professional account
+
+    def fetch(self, account, ctx=None):
+        if ctx is None:
+            raise ValueError("Instagram isn't connected.")
+        if account.is_us and ctx.own_id and account.external_id == ctx.own_id:
+            profile, media = meta_api.ig_own(ctx.token, ctx.own_id)
+        else:
+            profile, media = meta_api.ig_discovery(ctx.token, ctx.own_id, account.source)
+        account.external_id, account.verified = profile.get("id"), True
+        account.subscribers = profile.get("followers_count", account.subscribers)
+        account.thumbnail = profile.get("profile_picture_url") or account.thumbnail
+        return [self._item(m) for m in media if m.get("permalink") and m.get("timestamp")]
+
+    @staticmethod
+    def _item(m):
+        product, kind = m.get("media_product_type"), m.get("media_type")
+        fmt = "reel" if product == "REELS" else {"CAROUSEL_ALBUM": "carousel", "VIDEO": "video"}.get(kind, "image")
+        return {"title": _clean_caption(m.get("caption"), "(post without caption)"), "link": m["permalink"],
+                "published_at": _utc_time(m["timestamp"]), "format": fmt,
+                "thumbnail": m.get("thumbnail_url") or (m.get("media_url") if kind == "IMAGE" else None),
+                "tags": _hashtags(m.get("caption")), "views": None,
+                "likes": m.get("like_count"),  # missing when the account hides like counts: stays None
+                "comments": m.get("comments_count")}
+
+
+class FacebookConnector(SocialConnector):
+    id = "facebook"
+    label = "Facebook"
+    source_label = "Facebook Page name or link"
+    handle_word = "Page name"
+    handle_pattern = r"[A-Za-z0-9.\-]{1,100}"
+    url_hosts = ("facebook.com", "fb.com")
+    metrics = ["posts", "per_week", "likes", "comments", "shares"]
+    formats = {"post": "A text or link post.", "image": "A photo post.", "video": "A video post.",
+               "carousel": "A post with several photos."}
+    quota_note = "Uses the Meta Graph API. Competitor Pages need Meta's Page Public Content Access feature."
+
+    def profile_url(self, account):
+        return f"https://www.facebook.com/{account.source}"
+
+    def resolve(self, source, ctx=None):
+        handle = self.parse(source)
+        if not ctx:
+            return self._unverified(handle)
+        try:
+            page = meta_api.page_profile(ctx.page_token if handle == ctx.own_id else ctx.token, handle)
+        except http.NotPermitted:
+            # Other Pages need Page Public Content Access; keep the account, unverified.
+            return {**self._unverified(handle), "note": "Reading other Pages needs Meta's Page Public Content Access feature."}
+        return self._profile(page)
+
+    @staticmethod
+    def _profile(page):
+        return {"source": page.get("username") or page["id"], "verified": True, "external_id": page["id"],
+                "thumbnail": ((page.get("picture") or {}).get("data") or {}).get("url"),
+                "subscribers": page.get("followers_count") or page.get("fan_count"), "display_name": page.get("name")}
+
+    def suggest(self, query, ctx):
+        """Exact Page lookup. Pages you don't manage need Page Public Content Access (NotPermitted otherwise)."""
+        try:
+            handle = self.parse(query)
+        except ValueError:
+            return "exact", []
+        try:
+            return "exact", [self._profile(meta_api.page_profile(ctx.page_token if handle == ctx.own_id else ctx.token, handle))]
+        except http.ApiError as exc:
+            if isinstance(exc, (http.TokenInvalid, http.RateLimited, http.NotPermitted)):
+                raise
+            return "exact", []
+
+    def fetch(self, account, ctx=None):
+        if ctx is None:
+            raise ValueError("Facebook isn't connected.")
+        ours = bool(ctx.own_id) and account.external_id == ctx.own_id
+        token = ctx.page_token if ours else ctx.token
+        if not account.external_id or account.verified is False:
+            info = self.resolve(account.source, ctx)
+            if not info.get("verified"):
+                raise http.NotPermitted(info.get("note") or "This Page can't be read yet.")
+            account.external_id, account.verified = info["external_id"], True
+            account.thumbnail, account.subscribers = info.get("thumbnail"), info.get("subscribers")
+        return [self._item(p) for p in meta_api.page_posts(token, account.external_id)
+                if p.get("permalink_url") and p.get("created_time")]
+
+    @staticmethod
+    def _item(p):
+        kind = (((p.get("attachments") or {}).get("data") or [{}])[0].get("media_type") or "").lower()
+        fmt = {"photo": "image", "video": "video", "album": "carousel"}.get(kind, "post")
+        return {"title": _clean_caption(p.get("message"), "(post without text)"), "link": p["permalink_url"],
+                "published_at": _utc_time(p["created_time"]), "format": fmt, "thumbnail": p.get("full_picture"),
+                "tags": _hashtags(p.get("message")), "views": None,
+                "likes": ((p.get("reactions") or {}).get("summary") or {}).get("total_count"),
+                "comments": ((p.get("comments") or {}).get("summary") or {}).get("total_count"),
+                "shares": (p.get("shares") or {}).get("count", 0 if "shares" in p else None)}
+
+
+class XConnector(SocialConnector):
+    id = "x"
+    label = "X"
+    source_label = "X username or profile link"
+    handle_word = "username"
+    handle_pattern = r"[A-Za-z0-9_]{1,15}"
+    url_hosts = ("x.com", "twitter.com")
+    metrics = ["posts", "per_week", "x_views", "likes", "comments", "shares"]
+    formats = {"post": "A text or link post.", "image": "A post with photos.", "video": "A post with a video."}
+    quota_note = "X API is pay-per-use: each post read and profile lookup is billed from your X API credits."
+
+    def profile_url(self, account):
+        return f"https://x.com/{account.source}"
+
+    def resolve(self, source, ctx=None):
+        handle = self.parse(source)
+        if not ctx:
+            return self._unverified(handle)
+        return self._profile(x_api.user_by_username(ctx.token, handle))
+
+    @staticmethod
+    def _profile(user):
+        return {"source": user["username"], "verified": True, "external_id": user["id"],
+                "thumbnail": user.get("profile_image_url"), "display_name": user.get("name") or user["username"],
+                "subscribers": (user.get("public_metrics") or {}).get("followers_count")}
+
+    def suggest(self, query, ctx):
+        """Real search where the X plan allows it (Pro and higher); otherwise an exact username lookup."""
+        try:
+            return "search", [self._profile(u) for u in x_api.search_users(ctx.token, query.strip().lstrip("@"))]
+        except http.NotPermitted:
+            pass
+        try:
+            handle = self.parse(query)
+        except ValueError:
+            return "exact", []
+        try:
+            return "exact", [self._profile(x_api.user_by_username(ctx.token, handle))]
+        except http.ApiError as exc:
+            if isinstance(exc, (http.TokenInvalid, http.RateLimited, http.NotPermitted)):
+                raise
+            return "exact", []
+
+    def fetch(self, account, ctx=None):
+        if ctx is None:
+            raise ValueError("X isn't connected.")
+        if not account.external_id:
+            info = self.resolve(account.source, ctx)
+            account.external_id, account.verified = info["external_id"], True
+            account.thumbnail, account.subscribers = info.get("thumbnail"), info.get("subscribers")
+        posts, media = x_api.user_posts(ctx.token, account.external_id)
+        return [self._item(t, media, account.source) for t in posts]
+
+    @staticmethod
+    def _item(t, media, username):
+        m = t.get("public_metrics") or {}
+        types = [media[k]["type"] for k in (t.get("attachments") or {}).get("media_keys", []) if k in media]
+        fmt = "video" if any(x in ("video", "animated_gif") for x in types) else "image" if types else "post"
+        thumb = next((media[k].get("preview_image_url") or media[k].get("url")
+                      for k in (t.get("attachments") or {}).get("media_keys", []) if k in media), None)
+        return {"title": _clean_caption(t.get("text"), "(post)"), "link": f"https://x.com/{username}/status/{t['id']}",
+                "published_at": _utc_time(t["created_at"]), "format": fmt, "thumbnail": thumb,
+                "tags": [h["tag"] for h in (t.get("entities") or {}).get("hashtags", [])][:15],
+                "views": m.get("impression_count"), "likes": m.get("like_count"),
+                "comments": m.get("reply_count"), "shares": m.get("retweet_count")}
+
+
+CONNECTORS = {c.id: c for c in (YouTubeConnector(), RSSConnector(), InstagramConnector(), FacebookConnector(), XConnector())}
 
 # Platforms people ask for that aren't connected yet, and why. Shown in workspace settings.
 PLANNED = {
-    "instagram": "Needs Meta app review (Instagram Graph API). Only business/creator accounts expose public metrics.",
     "tiktok": "Needs TikTok Research/Display API approval.",
     "twitch": "Possible via Twitch Helix API (streams, VODs); not built yet.",
-    "x": "Paid API tier required.",
     "linkedin": "No public API for competitor pages.",
-    "facebook": "Needs Meta app review; public page metrics are limited.",
 }
-PLANNED_LABELS = {"instagram": "Instagram", "tiktok": "TikTok", "twitch": "Twitch", "x": "X",
-                  "linkedin": "LinkedIn", "facebook": "Facebook"}
+PLANNED_LABELS = {"tiktok": "TikTok", "twitch": "Twitch", "linkedin": "LinkedIn"}
 
 
 def get(platform):
@@ -149,7 +408,8 @@ def describe():
         "supported": [
             {"id": c.id, "label": c.label, "source_label": c.source_label,
              "metrics": {m: METRICS[m] for m in c.metrics}, "formats": c.formats,
-             "questions": c.supports_questions, "quota_note": c.quota_note}
+             "questions": c.supports_questions, "quota_note": c.quota_note,
+             "requires_connection": getattr(c, "requires_connection", False)}
             for c in CONNECTORS.values()
         ],
         "planned": [{"id": k, "label": PLANNED_LABELS[k], "reason": v} for k, v in PLANNED.items()],

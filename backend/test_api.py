@@ -97,7 +97,8 @@ def test_options_describe_platform_metrics(client):
     yt = next(p for p in o["platforms"]["supported"] if p["id"] == "youtube")
     rss = next(p for p in o["platforms"]["supported"] if p["id"] == "rss")
     assert "relative_performance" in yt["metrics"] and "views" not in rss["metrics"]
-    assert any(p["id"] == "instagram" for p in o["platforms"]["planned"])
+    ig = next(p for p in o["platforms"]["supported"] if p["id"] == "instagram")
+    assert ig["requires_connection"] and not any(p["id"] == "instagram" for p in o["platforms"]["planned"])
     assert len(o["industries"]) >= 12
 
 

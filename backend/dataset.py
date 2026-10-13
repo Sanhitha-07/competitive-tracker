@@ -29,12 +29,14 @@ def iso(dt):
 
 
 class Dataset:
-    def __init__(self, org, accounts, posts, questions=(), now=None):
+    def __init__(self, org, accounts, posts, questions=(), now=None, days=None):
+        """days: compare this many days instead of the workspace's comparison window."""
         self.org = org
         self.cfg = workspace.config(org)
         self.tz = workspace.tz(org)
         self.now = now or datetime.now(timezone.utc)
-        self.since = self.now - timedelta(hours=max(org.window_hours or 24, 1))
+        hours = days * 24 if days else max(org.window_hours or 24, 1)
+        self.since = self.now - timedelta(hours=hours)
         self.accounts = list(accounts)
         self.by_id = {a.id: a for a in self.accounts}
         self.us_ids = {a.id for a in self.accounts if a.is_us}
@@ -93,7 +95,8 @@ class Dataset:
     def topics(self):
         if self._topics is None:
             rows, our_total = topic_map.coverage_map(
-                self.recent, self.accounts, self.cfg["topics"], self.relative, self.questions)
+                self.recent, self.accounts, self.cfg["topics"], self.relative, self.questions,
+                getattr(self.org, "topic_rules", None))
             self._topics = (rows, our_total)
         return self._topics
 
@@ -105,6 +108,7 @@ class Dataset:
             "account": a.name, "account_id": a.id, "is_us": a.is_us, "platform": p.platform,
             "format": self.format(p), "thumbnail": getattr(p, "thumbnail", None),
             "published_at": iso(p.published_at), "views": p.views, "likes": p.likes, "comments": p.comments,
+            "shares": getattr(p, "shares", None),
             "duration_seconds": p.duration_seconds, "relative": self.relative.get(p.id),
             "baseline_views": round(b["median_views"]) if b else None, "baseline_posts": b["posts"] if b else 0,
             "metrics_updated_at": iso(getattr(p, "metrics_updated_at", None)),

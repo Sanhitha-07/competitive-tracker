@@ -12,15 +12,16 @@ engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread"
 # Columns added after the first version. Existing databases get them automatically
 # (new tables are created by create_all; only new columns on old tables need this).
 NEW_COLUMNS = {
-    "competitor": {"thumbnail": "VARCHAR", "last_fetched_at": "DATETIME"},
+    "competitor": {"thumbnail": "VARCHAR", "last_fetched_at": "DATETIME", "group": "VARCHAR",
+                   "external_id": "VARCHAR", "verified": "BOOLEAN"},
     "organization": {
         "creator_type": "VARCHAR", "niche": "VARCHAR", "audience": "VARCHAR",
         "goals": "JSON", "topics": "JSON", "formats": "JSON", "platforms": "JSON",
-        "timezone": "VARCHAR", "time_sensitive": "BOOLEAN",
+        "timezone": "VARCHAR", "time_sensitive": "BOOLEAN", "sub_niche": "VARCHAR", "topic_rules": "JSON",
     },
     "post": {
         "thumbnail": "VARCHAR", "format": "VARCHAR", "tags": "JSON",
-        "metrics_updated_at": "DATETIME", "questions_checked_at": "DATETIME",
+        "metrics_updated_at": "DATETIME", "questions_checked_at": "DATETIME", "shares": "INTEGER",
     },
 }
 
@@ -33,7 +34,8 @@ def create_tables():
             existing = {c["name"] for c in insp.get_columns(table)}
             for name, sql_type in columns.items():
                 if name not in existing:
-                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+                    # Quoted: "group" is an SQL keyword.
+                    conn.execute(text(f'ALTER TABLE {table} ADD COLUMN "{name}" {sql_type}'))
 
 
 def get_session():

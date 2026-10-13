@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { saveConfig } from "../api";
+import { PageHead } from "../components/ui";
 
 const WINDOWS = [
   [24, "Last 24 hours"], [72, "Last 3 days"], [168, "Last 7 days"], [336, "Last 14 days"],
@@ -10,9 +11,11 @@ const ZONES = ["Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Europe/London", 
 
 function fromConfig(cfg, org) {
   return {
+    name: org?.name || "",
     creator_type: cfg?.creator_type || "",
     category: cfg?.industry || "other",
     niche: cfg?.niche || "",
+    sub_niche: cfg?.sub_niche || "",
     audience: cfg?.audience || "",
     goals: cfg?.goals || [],
     topicsText: (cfg?.topics || []).join(", "),
@@ -52,6 +55,7 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
 
   async function onSubmit(e) {
     e.preventDefault();
+    if (!form.name.trim()) return setError("Enter a workspace or brand name.");
     if (!form.creator_type) return setError("Choose what kind of creator or business this workspace is for.");
     if (form.category === "other" && !form.niche.trim()) return setError('With industry "Other", describe your niche.');
     if (topics.some((t) => t.length > 60)) return setError("Each topic or keyword can be up to 60 characters.");
@@ -75,16 +79,20 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
 
   return (
     <section className="panel">
-      <div className="panel-head">
-        <div>
-          <h2>Workspace settings</h2>
-          <p className="muted">Tell the tracker who you are and what you care about. This ranks and explains recommendations. It never invents them: everything still comes from collected data.</p>
-        </div>
-      </div>
+      <PageHead
+        title="Workspace settings"
+        what="Who this workspace is for and what you care about. You can change these at any time."
+        why="Your niche, topics and goals decide which competitor topics count as relevant and how suggestions are prioritised. They never invent data."
+        next="Save, then add your accounts and competitors in Accounts."
+      />
 
       <form className="ws-form" onSubmit={onSubmit} noValidate>
         <fieldset>
           <legend>Who is this for?</legend>
+          <label className="field">
+            <span>Workspace or brand name</span>
+            <input id="ws-name" value={form.name} onChange={set("name")} maxLength={80} />
+          </label>
           <label className="field">
             <span>Creator / business type</span>
             <select id="ws-type" value={form.creator_type} onChange={set("creator_type")}>
@@ -101,6 +109,10 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
           <label className="field grow">
             <span>Niche {form.category === "other" ? "(required)" : "(optional)"}</span>
             <input id="ws-niche" value={form.niche} onChange={set("niche")} maxLength={120} placeholder="e.g. home strength training, indie horror games, Python for data analysts" />
+          </label>
+          <label className="field grow">
+            <span>Sub-niche (optional)</span>
+            <input id="ws-subniche" value={form.sub_niche} onChange={set("sub_niche")} maxLength={120} placeholder="e.g. kettlebells for beginners, B2B invoicing software" />
           </label>
           <label className="field full">
             <span>Target audience</span>
@@ -127,7 +139,9 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
             <textarea id="ws-topics" rows={2} value={form.topicsText} onChange={set("topicsText")} placeholder="e.g. protein, kettlebell, mobility, meal prep" />
           </label>
           {topics.length > 0 && <div className="chips">{topics.map((t) => <span className="chip static" key={t}>{t}</span>)}</div>}
-          <small className="muted">These always appear in the Coverage Gaps map, even when no one has posted about them yet.</small>
+          <small className="muted">These always appear in the Coverage Gaps map, even when no one has posted about them yet.
+            {config?.topic_rules && (Object.keys(config.topic_rules.aliases).length + config.topic_rules.excluded.length) > 0 &&
+              ` You've also made ${Object.keys(config.topic_rules.aliases).length + config.topic_rules.excluded.length} topic correction(s); manage them in Coverage Gaps.`}</small>
         </fieldset>
 
         <fieldset>

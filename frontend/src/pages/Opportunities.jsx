@@ -5,11 +5,14 @@ import {
 } from "../api";
 import { ConfidencePill } from "../components/Evidence";
 import Popup from "../components/Popup";
+import { Empty, Loading, PageHead } from "../components/ui";
+import Experiments from "./Experiments";
 import { Readiness, RecCard } from "./Suggestions";
 
 const MEDIAOPS_PLATFORMS = ["YouTube", "Instagram", "X", "Facebook", "LinkedIn"];
 const KIND_LABEL = {
   topic_gap: "Topics", audience_question: "Audience questions", outlier: "Standout posts", format_test: "Formats",
+  content_idea: "Ideas from posts",
 };
 const VERDICT = { above_usual: ["good", "Above your usual"], about_usual: ["neutral", "About your usual"], below_usual: ["bad", "Below your usual"] };
 
@@ -208,7 +211,7 @@ function Outcome({ o }) {
   );
 }
 
-function Pipeline({ orgId, items, onChange, setDialog }) {
+function Pipeline({ orgId, items, onChange, setDialog, onExperiment }) {
   const [msg, setMsg] = useState("");
   const replace = (o) => onChange((list) => list.map((x) => (x.id === o.id ? o : x)));
 
@@ -229,7 +232,8 @@ function Pipeline({ orgId, items, onChange, setDialog }) {
     }
   }
 
-  const active = items.filter((o) => o.status !== "dismissed");
+  const done = (o) => (o.status === "completed" ? 1 : 0); // finished items go last
+  const active = items.filter((o) => o.status !== "dismissed").sort((a, b) => done(a) - done(b));
   if (!active.length) return <p className="muted">Nothing saved yet. Use the actions on an opportunity below.</p>;
   return (
     <>
@@ -253,17 +257,25 @@ function Pipeline({ orgId, items, onChange, setDialog }) {
                 </td>
                 <td>
                   <div className="row-actions">
-                    {o.status !== "evaluated" && o.status !== "published" && (
+                    {o.status === "completed" ? (
+                      <button className="btn ghost small-btn" onClick={() => act(o, "saved")}>Reopen</button>
+                    ) : o.status !== "evaluated" && o.status !== "published" ? (
                       <>
                         <button className="btn ghost small-btn" onClick={() => setDialog({ mode: "brief", opp: o })}>{o.brief ? "Brief" : "Generate brief"}</button>
-                        <button className="btn ghost small-btn" onClick={() => setDialog({ mode: "mediaops", opp: o })}>Create in MediaOps</button>
+                        {o.mediaops_ref && ["in_mediaops", "scheduled"].includes(o.status)
+                          ? <span className="muted small" title="A draft already exists. Open it in MediaOps.">Draft in MediaOps</span>
+                          : <button className="btn ghost small-btn" onClick={() => setDialog({ mode: "mediaops", opp: o })}>Create in MediaOps</button>}
                         <button className="btn ghost small-btn" onClick={() => setDialog({ mode: "date", opp: o })}>Calendar</button>
                         <button className="btn ghost small-btn" onClick={() => setDialog({ mode: "publish", opp: o })}>Mark published</button>
+                        <button className="btn ghost small-btn" onClick={() => onExperiment(o)}>Test as experiment</button>
+                        <button className="btn ghost small-btn" onClick={() => act(o, "completed")}>Mark completed</button>
                         <button className="btn ghost small-btn" onClick={() => act(o, "dismissed")}>Dismiss</button>
                       </>
-                    )}
-                    {(o.status === "published" || o.status === "evaluated") && (
-                      <button className="btn ghost small-btn" onClick={() => measure(o)}>{o.status === "evaluated" ? "Re-check" : "Measure now"}</button>
+                    ) : (
+                      <>
+                        <button className="btn ghost small-btn" onClick={() => measure(o)}>{o.status === "evaluated" ? "Re-check" : "Measure now"}</button>
+                        <button className="btn ghost small-btn" onClick={() => act(o, "completed")}>Mark completed</button>
+                      </>
                     )}
                   </div>
                 </td>
@@ -321,12 +333,52 @@ function Learned({ stats }) {
   );
 }
 
+const VIEWS = [["opportunities", "Opportunities"], ["experiments", "Strategy experiments"]];
+
 export default function Opportunities({ orgId, onNavigate, refreshKey }) {
+  const [view, setView] = useState("opportunities");
+  const [prefill, setPrefill] = useState(null);
+  const clearPrefill = useCallback(() => setPrefill(null), []);
+
+  // Start an experiment pre-filled from an opportunity and linked to its brief/draft.
+  function testAsExperiment(o) {
+    const s = o.snapshot || {};
+    const isFormat = s.kind === "format_test";
+    setPrefill({
+      hypothesis: `Content on "${(s.topic || o.title).slice(0, 120)}" will beat our usual views.`,
+      reason: s.observed || "",
+      evidence: { opportunity: o.id, observations: [s.observed].filter(Boolean), sample: s.sample?.text },
+      variable_type: isFormat ? "format" : "topic",
+      variable_value: ((isFormat ? s.suggested_format : s.topic) || "").slice(0, 120),
+      opportunity_id: o.id,
+    });
+    setView("experiments");
+  }
+
+  return (
+    <>
+      <div className="segmented page-switch" role="tablist" aria-label="Opportunities or experiments">
+        {VIEWS.map(([id, label]) => (
+          <button key={id} role="tab" aria-selected={view === id} className={view === id ? "on" : ""} onClick={() => setView(id)}>{label}</button>
+        ))}
+      </div>
+      {view === "opportunities" ? (
+        <OpportunityList orgId={orgId} onNavigate={onNavigate} refreshKey={refreshKey} onExperiment={testAsExperiment} />
+      ) : (
+        <Experiments orgId={orgId} refreshKey={refreshKey} prefill={prefill} onPrefillUsed={clearPrefill}
+          onNavigate={() => setView("opportunities")} />
+      )}
+    </>
+  );
+}
+
+function OpportunityList({ orgId, onNavigate, refreshKey, onExperiment }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState({});
   const [dialog, setDialog] = useState(null); // {mode: "brief" | "mediaops" | "date" | "publish", opp}
+  const [showAll, setShowAll] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -363,37 +415,23 @@ export default function Opportunities({ orgId, onNavigate, refreshKey }) {
     }
   }
 
-  if (error) return <section className="panel"><div className="empty"><b>Opportunities not available</b><span>{error}</span></div></section>;
-  if (!data) return <section className="panel"><div className="empty"><b>Loading opportunities…</b></div></section>;
+  if (error) return <section className="panel"><Empty title="Opportunities not available">{error}</Empty></section>;
+  if (!data) return <section className="panel"><Loading what="Loading opportunities…" /></section>;
 
   return (
     <>
       <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>Your opportunity pipeline</h2>
-            <p className="muted">Each one keeps its original evidence, so you can follow it from idea → brief → MediaOps draft → published post → result.</p>
-          </div>
-          {loading && <span className="muted small">Updating…</span>}
-        </div>
-        {msg.pipeline && <p className="toast">{msg.pipeline}</p>}
-        <Pipeline orgId={orgId} items={data.tracked} onChange={setTracked} setDialog={setDialog} />
-        <Learned stats={data.learned} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2>New opportunities</h2>
-            <p className="muted">Competitive observations turned into content ideas. Nothing is shown without data behind it.</p>
-          </div>
-        </div>
+        <PageHead
+          title="What to work on next"
+          what="New content ideas from the competitive data, High priority first. Each card says why it got its priority."
+          next="Generate a brief, create a MediaOps draft, add it to your calendar, or save it for later."
+        />
         <Readiness items={data.readiness} onNavigate={onNavigate} />
         {data.suggested.length === 0 ? (
-          <div className="empty"><b>No new opportunities</b><span>Add competitors, click Refresh, or check back after they publish more.</span></div>
+          <Empty title="No new opportunities">Add competitors, click Refresh, or check back after they publish more.</Empty>
         ) : (
           <div className="sugg-list">
-            {data.suggested.map((r) => (
+            {(showAll ? data.suggested : data.suggested.slice(0, 8)).map((r) => (
               <RecCard
                 key={r.key}
                 rec={r}
@@ -408,8 +446,24 @@ export default function Opportunities({ orgId, onNavigate, refreshKey }) {
                 }
               />
             ))}
+            {!showAll && data.suggested.length > 8 && (
+              <div className="center"><button className="btn ghost" onClick={() => setShowAll(true)}>Show all {data.suggested.length} opportunities</button></div>
+            )}
           </div>
         )}
+      </section>
+
+      <section className="panel">
+        <PageHead
+          title="Your opportunity pipeline"
+          what="Ideas you've acted on. Each keeps its original evidence: idea → brief → MediaOps draft → published post → result."
+          why="Nothing is published from here. Drafts go through your usual MediaOps approval."
+        >
+          {loading && <span className="muted small">Updating…</span>}
+        </PageHead>
+        {msg.pipeline && <p className="toast">{msg.pipeline}</p>}
+        <Pipeline orgId={orgId} items={data.tracked} onChange={setTracked} setDialog={setDialog} onExperiment={onExperiment} />
+        <Learned stats={data.learned} />
       </section>
       <Dialogs orgId={orgId} dialog={dialog} setDialog={setDialog} apiConfigured={data.mediaops_api} replace={replace} />
     </>

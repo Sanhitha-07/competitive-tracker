@@ -59,7 +59,10 @@ FORMATS = {
     "long": ("Long-form video (20 min+)", True),
     "live": ("Live stream", True),
     "article": ("Article / blog post", True),
-    "image": ("Image or carousel post", False),
+    "image": ("Image post", True),
+    "carousel": ("Carousel (several photos or videos)", True),
+    "reel": ("Reel (Instagram)", True),
+    "post": ("Text or link post (Facebook, X)", True),
     "podcast": ("Podcast / audio", False),
     "newsletter": ("Newsletter", False),
 }
@@ -90,6 +93,7 @@ def config(org):
         "industry": ind,
         "industry_label": label if ind != "other" or not org.niche else org.niche,
         "niche": org.niche or "",
+        "sub_niche": getattr(org, "sub_niche", None) or "",
         "audience": org.audience or "",
         "goals": [g for g in (org.goals or []) if g in GOALS],
         "topics": [t for t in (org.topics or []) if t and t.strip()],
@@ -98,6 +102,8 @@ def config(org):
         "timezone": org.timezone or DEFAULT_TIMEZONE,
         "time_sensitive": sensitive if org.time_sensitive is None else org.time_sensitive,
         "window_hours": org.window_hours,
+        "topic_rules": {"aliases": (getattr(org, "topic_rules", None) or {}).get("aliases") or {},
+                        "excluded": (getattr(org, "topic_rules", None) or {}).get("excluded") or []},
         "configured": bool(org.creator_type and (org.niche or org.topics or org.goals)),
     }
 

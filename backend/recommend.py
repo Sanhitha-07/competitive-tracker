@@ -9,6 +9,7 @@ recommendations; it never invents one. Past outcomes of similar recommendations 
 a little and are shown as an association, not a cause.
 """
 from collections import defaultdict
+from datetime import datetime
 from statistics import median
 
 from rapidfuzz import fuzz
@@ -18,7 +19,7 @@ import workspace
 from connectors import CONNECTORS, METRICS
 from dataset import OUTLIER_RATIO, iso, utc
 from performance import MIN_VIDEOS, PERF_DAYS
-from topics import STATUS_LABELS, STOPWORDS
+from topics import GAP_STATUSES, STATUS_LABELS, STOPWORDS
 
 MAX_PER_KIND = 6
 FORMAT_MIN_POSTS = 5          # posts needed in a format before comparing it
@@ -37,8 +38,10 @@ KIND_LABELS = {
     "format_test": "Format worth testing",
     "publishing_pattern": "Publishing pattern to investigate",
     "benchmark": "Benchmark",
+    "content_idea": "Idea from a competitor post",
 }
-ACTIONABLE = {"topic_gap", "audience_question", "outlier", "format_test"}
+ACTIONABLE = {"topic_gap", "audience_question", "outlier", "format_test", "content_idea"}
+FRESH_DAYS = 14  # evidence from the last two weeks counts as recent
 CONFIDENCE_WEIGHT = {"high": 1.0, "medium": 0.85, "low": 0.7}
 
 
@@ -47,7 +50,8 @@ def _format_label(f):
 
 
 def _relevance_words(cfg):
-    text = " ".join([cfg["niche"], cfg["audience"], cfg["industry_label"] if cfg["industry"] != "other" else ""])
+    text = " ".join([cfg["niche"], cfg.get("sub_niche", ""), cfg["audience"],
+                     cfg["industry_label"] if cfg["industry"] != "other" else ""])
     return {w for w in textutil.words(text) if len(w) >= 3 and w not in STOPWORDS}
 
 
@@ -77,6 +81,49 @@ def _outcome_note(kind, learned):
     return note, 0.8 + 0.4 * rate
 
 
+def _latest_evidence(rec):
+    dates = [p["published_at"] for p in rec["evidence"].get("posts", []) if p.get("published_at")]
+    dates += [q["published_at"] for q in rec["evidence"].get("questions", []) if q.get("published_at")]
+    return max(dates) if dates else None
+
+
+def priority(rec, ds):
+    """High / Medium / Low, from factors that can be shown to the user. Every factor is listed,
+    so the level is never an unexplained score. Low-confidence findings are never "High"."""
+    goal = workspace.goal_weight(ds.cfg, rec["kind"])
+    relevance = rec.get("_relevance", 1.0)
+    strength = rec.get("_strength")
+    level = rec["confidence"]["level"]
+    latest = _latest_evidence(rec)
+    fresh = latest and (ds.now - utc(datetime.fromisoformat(latest))).days <= FRESH_DAYS
+    points, reasons = 0, []
+    if relevance >= 1.6:
+        points += 2
+        reasons.append("Matches one of your workspace topics")
+    elif relevance > 1.0:
+        points += 1
+        reasons.append("Matches your niche or audience description")
+    else:
+        reasons.append("No direct match with your workspace topics or niche")
+    if goal > 1.0:
+        points += 1
+        reasons.append("Supports one of your goals")
+    if strength is not None and strength >= 1.5:
+        points += 1
+        reasons.append(f"Strong result: {strength}× the usual views")
+    if fresh:
+        points += 1
+        reasons.append(f"Recent evidence (latest from {latest[:10]})")
+    elif latest:
+        reasons.append(f"Older evidence (latest from {latest[:10]})")
+    points += {"high": 2, "medium": 1, "low": 0}[level]
+    reasons.append(f"{level.capitalize()} confidence: {rec['confidence']['reason']}")
+    result = "high" if points >= 5 else "medium" if points >= 3 else "low"
+    if level == "low" and result == "high":
+        result = "medium"
+    return {"level": result, "reasons": reasons}
+
+
 def _finish(rec, ds, learned):
     note, w = _outcome_note(rec["kind"], learned)
     if note:
@@ -86,6 +133,10 @@ def _finish(rec, ds, learned):
     rec["actionable"] = rec["kind"] in ACTIONABLE
     rec["freshness"] = ds.freshness()
     rec.setdefault("data_period", ds.period())
+    rec["priority"] = priority(rec, ds) if rec["actionable"] else None
+    rec["latest_evidence"] = _latest_evidence(rec)
+    for k in ("_relevance", "_strength", "_group"):
+        rec.pop(k, None)
     return rec
 
 
@@ -105,64 +156,107 @@ def _best_format(ds, posts):
 
 # ---- 1. topics competitors cover that we don't (or cover less) ----
 
+def topic_relevance(ds, t, words=None):
+    """(score multiplier, reason or None) for how well a topic row matches the workspace."""
+    if t["tracked"]:
+        return 1.8, f'"{t["topic"]}" is one of your workspace topics.'
+    posts = [ds.post_by_id[i] for i in t["post_ids"] if not ds.is_us(ds.post_by_id[i])]
+    return _relevance(ds.cfg, t["topic"] + " " + " ".join(p.title for p in posts[:5]),
+                      words if words is not None else _relevance_words(ds.cfg))
+
+
+def _topic_rec(ds, t, our_total, words):
+    posts = [ds.post_by_id[i] for i in t["post_ids"] if not ds.is_us(ds.post_by_id[i])]
+    rel_score, reason = topic_relevance(ds, t, words)
+    lift = 1.2 if (t["median_relative"] or 0) >= 1.2 else 1.0
+    n_comp = len(t["competitors"])
+    limitations = [
+        "Topics are found by matching words in titles and tags. You may have covered this under different wording.",
+        f"Only posts from {iso(ds.since)[:10]} onward and the latest posts each account's feed returns are included.",
+    ]
+    if t["confidence"] == "low":
+        limitations.append("Small sample: treat this as a lead to check, not a conclusion.")
+    fmt = _best_format(ds, posts)
+    observed = (f'{n_comp} competitor{"s" if n_comp != 1 else ""} published {t["competitor_posts"]} post'
+                f'{"s" if t["competitor_posts"] != 1 else ""} about "{t["topic"]}"; you published {t["our_posts"]}.')
+    if t["median_relative"] is not None:
+        observed += f' Their typical post on it got {t["median_relative"]}× their usual views (from {t["relative_sample"]} posts with view data).'
+    if t["status"] == "covered_underperforming":
+        observed += (f' Your {t["our_relative_sample"]} posts on it got {t["our_median_relative"]}× your usual views, '
+                     "so the gap is in results, not coverage.")
+    return {
+        "key": f"topic_gap:{t['topic'].lower()}",
+        "kind": "topic_gap",
+        "tone": "lagging" if t["status"] == "not_covered_by_you" else "info",
+        "title": f'{STATUS_LABELS[t["status"]]}: "{t["topic"]}"',
+        "topic": t["topic"],
+        "observed": observed,
+        "detail": observed,
+        "why_relevant": reason or f"Covered by {n_comp} of the competitors you chose to track in this workspace.",
+        "evidence": {
+            "posts": [ds.post_card(p) for p in sorted(posts, key=lambda p: ds.relative.get(p.id) or 0, reverse=True)[:6]],
+            "questions": [ds.question_card(q) for q in ds.questions
+                          if textutil.contains_phrase(q.text, t["topic"])][:5],
+            "metrics": [m for m in [
+                {"label": "Competitor posts on topic", "value": t["competitor_posts"]},
+                {"label": "Your posts on topic", "value": t["our_posts"]},
+                {"label": "Competitors covering it", "value": n_comp},
+                t["median_relative"] is not None and {
+                    "label": "Their typical relative performance", "value": f'{t["median_relative"]}×',
+                    "definition": METRICS["relative_performance"]},
+            ] if m],
+        },
+        "sample": {"competitor_posts": t["competitor_posts"], "competitor_accounts": n_comp,
+                   "your_posts_checked": our_total,
+                   "text": f'{t["competitor_posts"]} competitor posts from {n_comp} account{"s" if n_comp != 1 else ""}; {our_total} of your posts checked.'},
+        "confidence": _confidence(t["confidence"], f'{t["competitor_posts"]} posts from {n_comp} competitors; {our_total} of your posts compared.'),
+        "limitations": limitations,
+        "suggested_format": fmt,
+        "suggested_format_label": _format_label(fmt) if fmt else None,
+        "next_step": (f'Compare your posts on "{t["topic"]}" with the competitor posts below: angle, title, format. Plan one improved post.'
+                      if t["status"] == "covered_underperforming" else
+                      f'Look at how competitors approached "{t["topic"]}", then outline an original angle for your audience.'),
+        "related_topics": [],
+        "_relevance": rel_score,
+        "_strength": t["median_relative"],
+        "_group": t.get("group", t["topic"]),
+        "score": t["competitor_posts"] * n_comp * lift * rel_score,
+    }
+
+
+def is_gap(ds, t, words=None):
+    """A topic is a potential gap only with 2+ competitor posts AND either 2+ competitors covering it
+    or a match with the workspace. One account's own recurring subject isn't a gap for you.
+    Coverage Gaps uses the same rule, so both pages agree."""
+    if t["status"] not in GAP_STATUSES or t["competitor_posts"] < 2:
+        return False
+    return len(t["competitors"]) >= 2 or topic_relevance(ds, t, words)[0] > 1.0
+
+
 def topic_recs(ds, learned):
     rows, our_total = ds.topics()
     words = _relevance_words(ds.cfg)
-    out = []
-    for t in rows:
-        if t["status"] not in ("not_covered_by_you", "covered_less") or t["competitor_posts"] < 2:
+    out = [_topic_rec(ds, t, our_total, words) for t in rows if is_gap(ds, t, words)]
+    # One suggestion per group of related topics ("protein", "protein shake"...): the strongest.
+    kept, by_group = [], {}
+    for r in sorted(out, key=lambda r: -r["score"]):
+        lead = by_group.get(r["_group"])
+        if lead:
+            lead["related_topics"].append(r["topic"])
             continue
-        posts = [ds.post_by_id[i] for i in t["post_ids"] if not ds.is_us(ds.post_by_id[i])]
-        rel_score, reason = _relevance(ds.cfg, t["topic"] + " " + " ".join(p.title for p in posts[:5]), words)
-        if t["tracked"]:
-            reason = f'"{t["topic"]}" is one of your workspace topics.'
-            rel_score = 1.8
-        lift = 1.2 if (t["median_relative"] or 0) >= 1.2 else 1.0
-        n_comp = len(t["competitors"])
-        limitations = [
-            "Topics are found by matching words in titles and tags. You may have covered this under different wording.",
-            f"Only posts from {iso(ds.since)[:10]} onward and the latest posts each account's feed returns are included.",
-        ]
-        if t["confidence"] == "low":
-            limitations.append("Small sample: treat this as a lead to check, not a conclusion.")
-        fmt = _best_format(ds, posts)
-        observed = (f'{n_comp} competitor{"s" if n_comp != 1 else ""} published {t["competitor_posts"]} post'
-                    f'{"s" if t["competitor_posts"] != 1 else ""} about "{t["topic"]}"; you published {t["our_posts"]}.')
-        if t["median_relative"] is not None:
-            observed += f' Their typical post on it got {t["median_relative"]}× their usual views (from {t["relative_sample"]} posts with view data).'
-        out.append({
-            "key": f"topic_gap:{t['topic'].lower()}",
-            "kind": "topic_gap",
-            "tone": "lagging" if t["status"] == "not_covered_by_you" else "info",
-            "title": f'{STATUS_LABELS[t["status"]]}: "{t["topic"]}"',
-            "topic": t["topic"],
-            "observed": observed,
-            "detail": observed,
-            "why_relevant": reason or f"Covered by {n_comp} of the competitors you chose to track in this workspace.",
-            "evidence": {
-                "posts": [ds.post_card(p) for p in sorted(posts, key=lambda p: ds.relative.get(p.id) or 0, reverse=True)[:6]],
-                "questions": [ds.question_card(q) for q in ds.questions
-                              if textutil.contains_phrase(q.text, t["topic"])][:5],
-                "metrics": [m for m in [
-                    {"label": "Competitor posts on topic", "value": t["competitor_posts"]},
-                    {"label": "Your posts on topic", "value": t["our_posts"]},
-                    {"label": "Competitors covering it", "value": n_comp},
-                    t["median_relative"] is not None and {
-                        "label": "Their typical relative performance", "value": f'{t["median_relative"]}×',
-                        "definition": METRICS["relative_performance"]},
-                ] if m],
-            },
-            "sample": {"competitor_posts": t["competitor_posts"], "competitor_accounts": n_comp,
-                       "your_posts_checked": our_total,
-                       "text": f'{t["competitor_posts"]} competitor posts from {n_comp} account{"s" if n_comp != 1 else ""}; {our_total} of your posts checked.'},
-            "confidence": _confidence(t["confidence"], f'{t["competitor_posts"]} posts from {n_comp} competitors; {our_total} of your posts compared.'),
-            "limitations": limitations,
-            "suggested_format": fmt,
-            "suggested_format_label": _format_label(fmt) if fmt else None,
-            "next_step": f'Look at how competitors approached "{t["topic"]}", then outline an original angle for your audience.',
-            "score": t["competitor_posts"] * n_comp * lift * rel_score,
-        })
-    return [_finish(r, ds, learned) for r in sorted(out, key=lambda r: -r["score"])[:MAX_PER_KIND * 2]]
+        by_group[r["_group"]] = r
+        kept.append(r)
+    return [_finish(r, ds, learned) for r in kept[:MAX_PER_KIND * 2]]
+
+
+def topic_rec(ds, topic, learned=None):
+    """A recommendation for one topic of the coverage map, even one not suggested automatically
+    (the user asked for a brief on it). None if no competitor posted about it."""
+    rows, our_total = ds.topics()
+    t = next((r for r in rows if r["topic"].lower() == topic.strip().lower()), None)
+    if not t or not t["competitor_posts"]:
+        return None
+    return _finish(_topic_rec(ds, t, our_total, _relevance_words(ds.cfg)), ds, learned or {})
 
 
 # ---- 2. public audience questions ----
@@ -216,6 +310,7 @@ def question_recs(ds, learned):
             "suggested_format_label": _format_label(ds.cfg["formats"][0] if ds.cfg["formats"] else ds.format(post)),
             "next_step": "Answer this question in your own content, in more depth than a comment reply could.",
             "data_period": {"from": iso(min(q.published_at for q in g)), "to": iso(max(q.published_at for q in g)), "days": None},
+            "_relevance": rel_score,
             "score": (1 + likes) ** 0.5 * len(g) * rel_score,
         })
     return [_finish(r, ds, learned) for r in sorted(out, key=lambda r: -r["score"])[:MAX_PER_KIND]]
@@ -223,44 +318,94 @@ def question_recs(ds, learned):
 
 # ---- 3. competitor posts far above their own usual ----
 
+def _outlier_rec(ds, p, words):
+    r = ds.relative[p.id]
+    b = ds.baseline[p.competitor_id]
+    acc = ds.by_id[p.competitor_id]
+    rel_score, reason = _relevance(ds.cfg, p.title + " " + " ".join(getattr(p, "tags", None) or []), words)
+    observed = (f'"{p.title}" by {acc.name} has {p.views:,} views, {r}× that account\'s usual '
+                f'{round(b["median_views"]):,} (median of {b["posts"]} posts).')
+    level = "medium" if b["posts"] >= 15 else "low"
+    return {
+        "key": f"outlier:{p.id}",
+        "kind": "outlier",
+        "tone": "info",
+        "title": f"{acc.name}: {r}× their usual views",
+        "topic": p.title,
+        "observed": observed,
+        "detail": observed,
+        "why_relevant": reason or f"{acc.name} is a competitor you track; posts far above their own baseline show what their audience responded to.",
+        "evidence": {"posts": [ds.post_card(p)], "questions": [],
+                     "metrics": [{"label": "Views", "value": p.views},
+                                 {"label": "Account's usual views (median)", "value": round(b["median_views"])},
+                                 {"label": "Relative performance", "value": f"{r}×", "definition": METRICS["relative_performance"]}]},
+        "sample": {"baseline_posts": b["posts"], "text": f"Baseline from {b['posts']} of {acc.name}'s posts in the last {b['days']} days."},
+        "confidence": _confidence(level, f"Baseline from {b['posts']} posts; this is one post."),
+        "limitations": [
+            "One post. Promotion, collaborations, trends or the algorithm may explain it; this data can't show the cause.",
+            "Views keep growing after publishing, so very new and very old posts aren't perfectly comparable.",
+        ],
+        "suggested_format": ds.format(p),
+        "suggested_format_label": _format_label(ds.format(p)),
+        "next_step": "Study the topic, title, thumbnail and format. Decide whether an original take fits your audience. Don't copy it.",
+        "data_period": {"from": iso(p.published_at), "to": iso(getattr(p, "metrics_updated_at", None) or ds.now), "days": None},
+        "_relevance": rel_score,
+        "_strength": r,
+        "score": r * rel_score,
+    }
+
+
 def outlier_recs(ds, learned):
     words = _relevance_words(ds.cfg)
-    out = []
-    for p in ds.recent:
-        r = ds.relative.get(p.id)
-        if ds.is_us(p) or r is None or r < OUTLIER_RATIO:
-            continue
-        b = ds.baseline[p.competitor_id]
-        acc = ds.by_id[p.competitor_id]
-        rel_score, reason = _relevance(ds.cfg, p.title + " " + " ".join(getattr(p, "tags", None) or []), words)
-        observed = (f'"{p.title}" by {acc.name} has {p.views:,} views, {r}× that account\'s usual '
-                    f'{round(b["median_views"]):,} (median of {b["posts"]} posts).')
-        level = "medium" if b["posts"] >= 15 else "low"
-        out.append({
-            "key": f"outlier:{p.id}",
-            "kind": "outlier",
-            "tone": "info",
-            "title": f"{acc.name}: {r}× their usual views",
-            "topic": p.title,
-            "observed": observed,
-            "detail": observed,
-            "why_relevant": reason or f"{acc.name} is a competitor you track; posts far above their own baseline show what their audience responded to.",
-            "evidence": {"posts": [ds.post_card(p)], "questions": [],
-                         "metrics": [{"label": "Views", "value": p.views},
-                                     {"label": "Account's usual views (median)", "value": round(b["median_views"])},
-                                     {"label": "Relative performance", "value": f"{r}×", "definition": METRICS["relative_performance"]}]},
-            "sample": {"baseline_posts": b["posts"], "text": f"Baseline from {b['posts']} of {acc.name}'s posts in the last {b['days']} days."},
-            "confidence": _confidence(level, f"Baseline from {b['posts']} posts; this is one post."),
-            "limitations": [
-                "One post. Promotion, collaborations, trends or the algorithm may explain it; this data can't show the cause.",
-                "Views keep growing after publishing, so very new and very old posts aren't perfectly comparable.",
-            ],
-            "suggested_format": ds.format(p),
-            "suggested_format_label": _format_label(ds.format(p)),
-            "next_step": "Study the topic, title, thumbnail and format. Decide whether an original take fits your audience. Don't copy it.",
-            "score": r * rel_score,
-        })
+    out = [_outlier_rec(ds, p, words) for p in ds.recent
+           if not ds.is_us(p) and (ds.relative.get(p.id) or 0) >= OUTLIER_RATIO]
     return [_finish(r, ds, learned) for r in sorted(out, key=lambda r: -r["score"])[:MAX_PER_KIND]]
+
+
+def post_rec(ds, post_id, learned=None):
+    """A recommendation built around one competitor post the user picked (e.g. in Content Explorer).
+    A post far above its account's usual is the same opportunity as the automatic "outlier" one,
+    so it gets the same key and can't be saved twice."""
+    p = ds.post_by_id.get(post_id)
+    if not p or ds.is_us(p):
+        return None
+    words = _relevance_words(ds.cfg)
+    if (ds.relative.get(p.id) or 0) >= OUTLIER_RATIO:
+        return _finish(_outlier_rec(ds, p, words), ds, learned or {})
+    acc = ds.by_id[p.competitor_id]
+    rel_score, reason = _relevance(ds.cfg, p.title + " " + " ".join(getattr(p, "tags", None) or []), words)
+    r, b = ds.relative.get(p.id), ds.baseline.get(p.competitor_id)
+    observed = f'You picked "{p.title}" by {acc.name}'
+    if r is not None:
+        observed += f" ({p.views:,} views, {r}× that account's usual {round(b['median_views']):,})."
+    elif p.views is not None:
+        observed += f" ({p.views:,} views; {acc.name} doesn't have enough posts yet for a usual-views baseline)."
+    else:
+        observed += " (this platform doesn't report views)."
+    metrics = [m for m in [p.views is not None and {"label": "Views", "value": p.views},
+                           r is not None and {"label": "Relative performance", "value": f"{r}×",
+                                              "definition": METRICS["relative_performance"]}] if m]
+    return _finish({
+        "key": f"content_idea:{p.id}",
+        "kind": "content_idea",
+        "tone": "info",
+        "title": f"Idea from {acc.name}: {p.title[:90]}",
+        "topic": p.title,
+        "observed": observed,
+        "detail": observed,
+        "why_relevant": reason or "You chose this post as a reference.",
+        "evidence": {"posts": [ds.post_card(p)], "questions": [], "metrics": metrics},
+        "sample": {"text": "One post you selected."},
+        "confidence": _confidence("low", "One post, picked by you; nothing shows it would work for your audience."),
+        "limitations": ["One post. Its results may come from things this data can't see (promotion, timing, the account's audience)."],
+        "suggested_format": ds.format(p),
+        "suggested_format_label": _format_label(ds.format(p)),
+        "next_step": "Write an original take for your audience. Use the post as research only.",
+        "data_period": {"from": iso(p.published_at), "to": iso(ds.now), "days": None},
+        "_relevance": rel_score,
+        "_strength": r,
+        "score": 1.0,
+    }, ds, learned or {})
 
 
 # ---- 4. formats that do well for competitors and that we rarely use ----
@@ -317,6 +462,8 @@ def format_recs(ds, learned, perf):
             "suggested_format_label": _format_label(f),
             "next_step": f"Make 2–3 {_format_label(f).lower()} posts on topics you already know work, then compare them with your baseline.",
             "data_period": {"from": None, "to": iso(ds.now), "days": PERF_DAYS},
+            "_relevance": 1.3 if preferred else 1.0,
+            "_strength": round(med, 2),
             "score": med * len(accounts) * (1.4 if preferred else 1.0),
         })
     # Length/Shorts findings from the Performance comparison.
@@ -372,8 +519,12 @@ def _from_performance(ds, perf, kind):
 def build(ds, perf, learned=None):
     """All recommendations, best first, each with full evidence."""
     learned = learned or {}
+    fmts = format_recs(ds, learned, perf)
+    # "Add more Shorts" (from the comparison) says the same as "Worth testing: Short video".
+    if any(r["key"] == "format_test:short" for r in fmts):
+        fmts = [r for r in fmts if r["key"] != "format_test:shorts_pct"]
     recs = (topic_recs(ds, learned) + question_recs(ds, learned) + outlier_recs(ds, learned)
-            + format_recs(ds, learned, perf)
+            + fmts
             + [_finish(r, ds, learned) for r in _from_performance(ds, perf, "publishing_pattern")]
             + [_finish(r, ds, learned) for r in _from_performance(ds, perf, "benchmark")])
     # Raw scores mean different things per kind (posts × accounts, likes, ×-baseline), so scale

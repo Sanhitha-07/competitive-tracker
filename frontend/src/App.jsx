@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchNews, getOptions, getOrganizations, getResults, setDisplayTimeZone } from "./api";
+import ErrorBoundary from "./components/ErrorBoundary";
 import OrgBar from "./components/OrgBar";
-import OverviewCards from "./components/OverviewCards";
 import Gaps from "./pages/Gaps";
 import Speed from "./pages/Speed";
 import Performance from "./pages/Performance";
@@ -44,6 +44,7 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [signIn, setSignIn] = useState(null); // outcome of a platform sign-in: {ok, text}; stays until dismissed
   const [updatedAt, setUpdatedAt] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0); // tells tabs that load their own data to reload
 
@@ -108,8 +109,23 @@ export default function App() {
   }, [orgId, loadResults]);
 
   useEffect(() => {
-    if (window.location.hash.slice(1) !== tab) window.history.replaceState(null, "", `#${tab}`);
+    if (window.location.hash.slice(1) !== tab) window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${tab}`);
   }, [tab]);
+
+  // Back from Instagram / Facebook / X sign-in: show the outcome once, then tidy the address bar.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const labels = { instagram: "Instagram", facebook: "Facebook", x: "X" };
+    if (q.get("connected")) {
+      setSignIn({ ok: true, text: `${labels[q.get("connected")] || q.get("connected")} connected.` +
+        (q.get("status") === "needs_page" ? " Choose which Page this workspace uses under Platform connections." : " Click Refresh to collect posts.") });
+    } else if (q.get("connect_error")) {
+      setSignIn({ ok: false, text: `Couldn't connect: ${q.get("connect_error")}` });
+    }
+    if (q.has("connected") || q.has("connect_error")) {
+      window.history.replaceState(null, "", `${window.location.pathname}#accounts`);
+    }
+  }, []);
 
   async function refresh() {
     setNotice("");
@@ -117,11 +133,13 @@ export default function App() {
     try {
       const res = await fetchNews(orgId);
       const failed = (res.accounts || []).filter((a) => a.error).map((a) => a.account);
+      const skipped = (res.accounts || []).filter((a) => a.skipped);
       const questions = (res.accounts || []).reduce((n, a) => n + (a.questions || 0), 0);
       setNotice(
         `${res.added} new ${res.added === 1 ? "item" : "items"} fetched` +
           (questions ? `, ${questions} new audience question${questions === 1 ? "" : "s"}` : "") + "." +
           (failed.length ? ` Couldn't read: ${[...new Set(failed)].join(", ")}. See the Accounts tab.` : "") +
+          (skipped.length ? ` Skipped ${skipped.length} account${skipped.length === 1 ? "" : "s"} on platforms that aren't connected yet.` : "") +
           (res.quota?.warning ? ` ${res.quota.warning}` : "")
       );
     } catch (e) {
@@ -135,14 +153,12 @@ export default function App() {
 
   const config = results?.config;
   const visibleTabs = TABS.filter((t) => !t.onlyWhen || config?.[t.onlyWhen] || (t.id === "speed" && results?.speed?.length));
-  const recKeys = useMemo(() => new Set((results?.recommendations || []).map((r) => r.key)), [results]);
   const counts = {
     suggestions: results?.recommendations?.length,
     gaps: results?.overview?.topics_to_review,
     speed: results?.speed?.length,
   };
   const org = orgs.find((o) => o.id === orgId);
-  const ytDefinitions = options?.platforms?.supported.find((p) => p.id === "youtube")?.metrics;
 
   return (
     <div className="app">
@@ -150,7 +166,7 @@ export default function App() {
         <div>
           <span className="eyebrow">MediaOps</span>
           <h1>Competitive Tracker</h1>
-          <p>Compare your content with competitors on the platforms you use: what they cover that you don't, what's working for them, and what to make next.</p>
+          <p>Track competitors, see what works for them and for you, and turn the evidence into original content through your MediaOps approval workflow.</p>
         </div>
         <div className="banner-actions">
           <button className="btn light" onClick={refresh} disabled={!orgId || refreshing || loading}>
@@ -188,6 +204,19 @@ export default function App() {
           <button className="btn ghost small-btn" onClick={tryAgain}>Try again</button>
         </div>
       )}
+      {options && !options.account_groups && (
+        <div className="alert" role="alert">
+          <b>The API is running an older version.</b> Some pages won't work until it's restarted: close the API window,
+          then double-click backend\run_api.bat again.
+          <button className="btn ghost small-btn" onClick={tryAgain}>I've restarted it</button>
+        </div>
+      )}
+      {signIn && (
+        <div className={signIn.ok ? "notice row-between" : "alert"} role="status">
+          <span>{signIn.text}</span>
+          <button className="btn ghost small-btn" onClick={() => setSignIn(null)}>Dismiss</button>
+        </div>
+      )}
       {notice && <div className="notice">{notice}</div>}
 
       {!orgId ? (
@@ -202,7 +231,12 @@ export default function App() {
         </section>
       ) : (
         <>
-          <OverviewCards data={results?.overview} perf={results?.performance} config={config} />
+          {results && !config?.configured && tab !== "workspace" && (
+            <div className="notice small">
+              Your workspace isn't set up yet, so suggestions can't be ranked for your niche.{" "}
+              <button className="link-btn" onClick={() => setTab("workspace")}>Set up the workspace</button>
+            </div>
+          )}
 
           <nav className="tabs" role="tablist">
             {visibleTabs.map((t) => (
@@ -219,19 +253,23 @@ export default function App() {
             ))}
           </nav>
 
+          <ErrorBoundary key={`${tab}-${orgId}-${refreshKey}`}>
           {tab === "suggestions" && (
             <Suggestions orgId={orgId} items={results?.recommendations} readiness={results?.readiness} config={config}
-              onNavigate={setTab} onTracked={() => setRefreshKey((k) => k + 1)} />
+              onNavigate={setTab} refreshKey={refreshKey} />
           )}
           {tab === "opportunities" && <Opportunities orgId={orgId} onNavigate={setTab} refreshKey={refreshKey} />}
-          {tab === "performance" && <Performance orgId={orgId} perf={results?.performance} definitions={ytDefinitions} refreshKey={refreshKey} />}
+          {tab === "performance" && <Performance orgId={orgId} refreshKey={refreshKey} onNavigate={setTab} />}
           {tab === "gaps" && (
             <Gaps orgId={orgId} gaps={results?.gaps || []} windowHours={results?.organization?.window_hours} config={config}
-              recKeys={recKeys} onNavigate={setTab} refreshKey={refreshKey} />
+              onNavigate={setTab} refreshKey={refreshKey} onConfigChanged={() => { loadResults(); setRefreshKey((k) => k + 1); }} />
           )}
-          {tab === "explorer" && <Explorer orgId={orgId} refreshKey={refreshKey} />}
+          {tab === "explorer" && <Explorer orgId={orgId} refreshKey={refreshKey} onNavigate={setTab} />}
           {tab === "speed" && <Speed rows={results?.speed || []} />}
-          {tab === "accounts" && <Accounts orgId={orgId} platforms={options?.platforms} onChanged={loadResults} />}
+          {tab === "accounts" && (
+            <Accounts orgId={orgId} platforms={options?.platforms} groups={options?.account_groups} refreshKey={refreshKey} onNavigate={setTab}
+              onChanged={() => { loadResults(); setRefreshKey((k) => k + 1); }} />
+          )}
           {tab === "workspace" && (
             <Workspace
               orgId={orgId} org={org} config={config} options={options} onNavigate={setTab}
@@ -242,6 +280,7 @@ export default function App() {
               }}
             />
           )}
+          </ErrorBoundary>
         </>
       )}
     </div>
