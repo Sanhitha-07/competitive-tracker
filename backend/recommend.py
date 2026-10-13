@@ -8,12 +8,12 @@ The workspace configuration (topics, niche, audience, goals, formats) only RANKS
 recommendations; it never invents one. Past outcomes of similar recommendations adjust ranking
 a little and are shown as an association, not a cause.
 """
-import re
 from collections import defaultdict
 from statistics import median
 
 from rapidfuzz import fuzz
 
+import textutil
 import workspace
 from connectors import CONNECTORS, METRICS
 from dataset import OUTLIER_RATIO, iso, utc
@@ -28,7 +28,7 @@ QUESTION_MIN_WORDS = 3        # words of 3+ letters that aren't stopwords
 
 
 def _content_words(text):
-    return sum(1 for w in re.findall(r"[^\W_]+", text.lower()) if len(w) >= 3 and w not in STOPWORDS)
+    return sum(1 for w in textutil.words(text) if len(w) >= 3 and w not in STOPWORDS)
 
 KIND_LABELS = {
     "topic_gap": "Topic competitors cover",
@@ -48,16 +48,16 @@ def _format_label(f):
 
 def _relevance_words(cfg):
     text = " ".join([cfg["niche"], cfg["audience"], cfg["industry_label"] if cfg["industry"] != "other" else ""])
-    return {w for w in re.findall(r"[^\W_]+", text.lower()) if len(w) >= 3 and w not in STOPWORDS}
+    return {w for w in textutil.words(text) if len(w) >= 3 and w not in STOPWORDS}
 
 
 def _relevance(cfg, text, words):
     """(score multiplier, reason) for how well a text matches the workspace configuration."""
     low = text.lower()
     for t in cfg["topics"]:
-        if re.search(r"(?<![^\W_])" + re.escape(t.lower()) + r"(?![^\W_])", low):
+        if textutil.contains_phrase(low, t):
             return 1.6, f'Matches "{t}", one of your workspace topics.'
-    hit = sorted(w for w in words if re.search(r"(?<![^\W_])" + re.escape(w) + r"(?![^\W_])", low))
+    hit = sorted(w for w in words if textutil.contains_phrase(low, w))
     if hit:
         return 1.3, f"Mentions {', '.join(hit[:3])} from your niche/audience description."
     return 1.0, None
@@ -142,7 +142,7 @@ def topic_recs(ds, learned):
             "evidence": {
                 "posts": [ds.post_card(p) for p in sorted(posts, key=lambda p: ds.relative.get(p.id) or 0, reverse=True)[:6]],
                 "questions": [ds.question_card(q) for q in ds.questions
-                              if t["topic"].lower() in q.text.lower()][:5],
+                              if textutil.contains_phrase(q.text, t["topic"])][:5],
                 "metrics": [m for m in [
                     {"label": "Competitor posts on topic", "value": t["competitor_posts"]},
                     {"label": "Your posts on topic", "value": t["our_posts"]},

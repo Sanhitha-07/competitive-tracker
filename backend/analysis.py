@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 from rapidfuzz import fuzz
 
+import textutil
+
 # Two titles with a score at or above this count as the same story.
 # Raise it if unrelated stories get joined; lower it if the same story is split.
 THRESHOLD = 70
@@ -43,7 +45,7 @@ def _utc(dt):
 
 
 def clean_title(title):
-    words = re.findall(r"[a-z0-9]+", title.lower())
+    words = textutil.words(title)  # any script, not only a-z
     return [w for w in words if w not in STOPWORDS]
 
 

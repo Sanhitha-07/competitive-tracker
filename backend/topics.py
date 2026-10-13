@@ -10,8 +10,9 @@ Works on any objects with these attributes:
   account: id, name, is_us
   post:    id, competitor_id, title, tags, published_at
 """
-import re
 from collections import defaultdict
+
+import textutil
 
 # Generic words that say nothing about the topic, in any niche.
 STOPWORDS = set("""
@@ -36,7 +37,7 @@ BOILERPLATE_MIN_POSTS = 5  # ...judged only for accounts with at least 5 posts i
 
 
 def _words(text):
-    return [w for w in re.findall(r"[^\W_]+", text.lower()) if len(w) >= 3 and not w.isdigit()]
+    return [w for w in textutil.words(text) if len(w) >= 3 and not w.isdigit()]
 
 
 def _account_words(accounts):
@@ -67,7 +68,7 @@ def _title_and_tag_terms(post, skip):
 
 def _matches(phrase, post):
     text = " ".join([post.title, *(getattr(post, "tags", None) or [])]).lower()
-    return re.search(r"(?<![^\W_])" + re.escape(phrase.lower()) + r"(?![^\W_])", text) is not None
+    return textutil.contains_phrase(text, phrase)
 
 
 def confidence(competitor_posts, competitor_accounts, our_total):
@@ -129,7 +130,7 @@ def coverage_map(posts, accounts, tracked=(), relative=None, questions=None):
         # Count by name, so one competitor's website + YouTube channel count as one competitor.
         comp_names = sorted({by_id[p.competitor_id].name for p in theirs})
         rel = sorted(relative[p.id] for p in theirs if relative.get(p.id) is not None)
-        q = [x for x in questions if re.search(r"(?<![^\W_])" + re.escape(term) + r"(?![^\W_])", x.text.lower())]
+        q = [x for x in questions if textutil.contains_phrase(x.text, term)]
         return {
             "topic": tracked_l.get(term, term),
             "tracked": term in tracked_l,
