@@ -155,10 +155,23 @@ def test_explorer_filters(client, seeded):
     assert top["relative"] == 9.0 and top["thumbnail"] and top["topics"]
 
 
-def test_explorer_my_topics_needs_config(client):
+def test_explorer_my_topics_without_saved_topics_and_no_posts(client):
     org = _org(client, "No Topics", category="travel")
     r = client.get(f"/organizations/{org['id']}/content?my_topics=true")
-    assert r.status_code == 400
+    assert r.status_code == 200
+    assert r.json()["total"] == 0 and r.json()["facets"]["my_topics_source"] == "our_posts"
+
+
+def test_explorer_my_topics_falls_back_to_our_topics(client):
+    """No topics saved: "My niche topics" uses the topics our own posts cover."""
+    org = _org(client, "Derived Niche", category="fitness")
+    _seed(org["id"])
+    d = client.get(f"/organizations/{org['id']}/content?my_topics=true&limit=100").json()
+    assert d["facets"]["my_topics_source"] == "our_posts"
+    assert "kettlebell swing" in d["facets"]["my_topics"]
+    titles = [i["title"] for i in d["items"]]
+    assert any("kettlebell swing" in t for t in titles)
+    assert all(not i["is_us"] for i in d["items"])
 
 
 # ---- opportunities: recommendation -> brief -> MediaOps -> scheduled -> published -> evaluated ----
@@ -293,6 +306,43 @@ def test_fetch_saves_snapshots_questions_and_handles_quota(client, monkeypatch):
         res = fetcher.fetch_org(s, org["id"], now=NOW + timedelta(hours=8))
         assert res["accounts"][0]["snapshots"] == 1
         assert len(s.exec(select(MetricSnapshot).where(MetricSnapshot.post_id == post.id)).all()) == 2
+
+
+def test_refresh_updates_views_of_older_videos(client, monkeypatch):
+    """Videos no longer in the channel's latest batch still get their views updated on Refresh."""
+    org = _org(client, "Busy Channel", category="news")
+    with Session(engine) as s:
+        a = Competitor(org_id=org["id"], name="Busy", platform="youtube", source="@busy", is_us=True)
+        s.add(a)
+        s.commit()
+        s.refresh(a)
+        old = Post(competitor_id=a.id, platform="youtube", title="older video", link="https://www.youtube.com/watch?v=OLDVIDEO001",
+                   published_at=NOW - timedelta(days=2), views=23, likes=0, comments=0, metrics_updated_at=NOW - timedelta(days=1))
+        ancient = Post(competitor_id=a.id, platform="youtube", title="too old to recheck", link="https://www.youtube.com/watch?v=ANCIENT0001",
+                       published_at=NOW - timedelta(days=200), views=5, metrics_updated_at=NOW - timedelta(days=150))
+        s.add_all([old, ancient])
+        s.commit()
+
+        asked = []
+
+        def fake_stats(ids):
+            asked.extend(ids)
+            return {"OLDVIDEO001": {"views": 25700, "likes": 900, "comments": 40}}
+
+        monkeypatch.setattr(youtube, "video_stats", fake_stats)
+        monkeypatch.setattr(youtube, "budget_left", lambda: 9000)
+        monkeypatch.setitem(connectors.CONNECTORS, "youtube", FakeYouTube(views=100))
+        res = fetcher.fetch_org(s, org["id"], now=NOW)
+
+        assert res["accounts"][0]["updated_older"] == 1
+        assert asked == ["OLDVIDEO001"]  # the 200-day-old video isn't re-checked
+        s.refresh(old)
+        assert old.views == 25700 and old.likes == 900
+        assert len(s.exec(select(MetricSnapshot).where(MetricSnapshot.post_id == old.id)).all()) == 1
+
+        # Our recent posts list only includes posts that have view counts.
+        h = client.get(f"/organizations/{org['id']}/history").json()
+        assert all(p["views"] is not None for p in h["our_recent_vs_baseline"])
 
 
 def test_quota_budget_blocks_calls(monkeypatch):

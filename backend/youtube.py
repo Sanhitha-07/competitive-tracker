@@ -261,6 +261,28 @@ def latest_videos(uploads_playlist, max_videos=MAX_VIDEOS):
     return videos
 
 
+def video_id(link):
+    """'https://www.youtube.com/watch?v=abc123DEF45' -> 'abc123DEF45' (None if not a video link)."""
+    m = re.search(r"[?&]v=([\w-]{11})", link or "")
+    return m.group(1) if m else None
+
+
+def video_stats(ids):
+    """Current views/likes/comments for already-saved videos: 1 unit per 50 videos.
+    Returns {video_id: {...}}; deleted or private videos are simply missing."""
+    out = {}
+    for i in range(0, len(ids), 50):
+        data = _get("videos", part="statistics", id=",".join(ids[i:i + 50]))
+        for v in data.get("items", []):
+            stats = v.get("statistics", {})
+            out[v["id"]] = {
+                "views": int(stats.get("viewCount", 0)),
+                "likes": int(stats["likeCount"]) if "likeCount" in stats else None,
+                "comments": int(stats["commentCount"]) if "commentCount" in stats else None,
+            }
+    return out
+
+
 QUESTION_START = re.compile(
     r"^(how|what|why|when|where|which|who|can|could|should|would|is|are|does|do|did|will|any)\b", re.IGNORECASE
 )

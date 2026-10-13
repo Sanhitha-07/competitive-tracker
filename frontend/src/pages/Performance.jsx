@@ -90,6 +90,7 @@ function History({ orgId, refreshKey }) {
   if (!h) return null;
   const weeks = [...new Set(h.accounts.flatMap((a) => a.weekly.map((w) => w.week)))].sort().slice(-8);
   const withViews = h.accounts.filter((a) => a.weekly.some((w) => w.median_views != null));
+  const recentBaseline = h.accounts.find((a) => a.is_us && a.baseline)?.baseline;
   return (
     <>
       <section className="panel">
@@ -143,24 +144,41 @@ function History({ orgId, refreshKey }) {
           <div className="panel-head">
             <div>
               <h2>Your recent posts vs your usual</h2>
-              <p className="muted">Each post's views ÷ your median views (posts 48h+ old, last 90 days). Posts under 48 hours old aren't compared yet.</p>
+              <p className="muted">
+                Is each new post doing better or worse than your posts normally do? <b>vs your usual</b> = this post's views ÷ your
+                typical (median) views{recentBaseline ? ` of ${compact(recentBaseline.median_views)}` : ""}, from your posts 48h+ old in the last 90 days.
+                <b> 2×</b> means twice your usual, <b>0.5×</b> half. Only posts from platforms that report views are listed (website articles don't).
+              </p>
             </div>
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Post</th><th>Published</th><th>Views</th><th>vs your usual</th></tr></thead>
+              <thead><tr><th>Post</th><th>Published</th><th>Views</th><th title="This post's views ÷ your typical views">vs your usual</th></tr></thead>
               <tbody>
-                {h.our_recent_vs_baseline.map((p) => (
-                  <tr key={p.id}>
-                    <td className="story"><a href={p.link} target="_blank" rel="noreferrer">{p.title}</a></td>
-                    <td className="nowrap small">{fmtTime(p.published_at)}</td>
-                    <td className="num">{compact(p.views)}</td>
-                    <td className="num">{p.relative != null ? <span className={p.relative >= 1.2 ? "good-text" : p.relative < 0.8 ? "bad-text" : ""}>{p.relative}×</span> : <span className="muted">–</span>}</td>
-                  </tr>
-                ))}
+                {h.our_recent_vs_baseline.map((p) => {
+                  const tooNew = Date.now() - new Date(p.published_at).getTime() < 48 * 3600 * 1000;
+                  return (
+                    <tr key={p.id}>
+                      <td className="story"><a href={p.link} target="_blank" rel="noreferrer">{p.title}</a></td>
+                      <td className="nowrap small">{fmtTime(p.published_at)}</td>
+                      <td className="num">
+                        {compact(p.views)}
+                        {p.metrics_updated_at && <div className="muted tiny-text">as of {fmtTime(p.metrics_updated_at)}</div>}
+                      </td>
+                      <td className="num">
+                        {p.relative != null ? (
+                          <span className={p.relative >= 1.2 ? "good-text" : p.relative < 0.8 ? "bad-text" : ""}>{p.relative}×</span>
+                        ) : (
+                          <span className="muted small">{tooNew ? "Too new (under 48h)" : "Not enough history"}</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          <p className="muted small">Views keep growing after a post goes out. Click <b>Refresh</b> to update them; refresh also re-checks your older videos.</p>
         </section>
       )}
     </>

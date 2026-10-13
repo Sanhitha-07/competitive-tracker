@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, select
 
@@ -40,10 +40,16 @@ from topics import STATUS_LABELS
 app = FastAPI(title="MediaOps Competitive Tracker")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    """Opening the API address in a browser shows the API test page instead of "Not Found"."""
+    return RedirectResponse("/docs")
 
 
 @app.on_event("startup")
@@ -371,6 +377,15 @@ def get_recommendations(org_id: int, session: Session = Depends(get_session)):
 PERF_FILTERS = {"outlier": (2.0, None), "above": (1.2, None), "usual": (0.8, 1.2), "below": (None, 0.8)}
 
 
+# Words too general to describe a niche when "My niche topics" is worked out from our own posts.
+GENERIC_TOPIC_WORDS = {
+    "against", "about", "after", "before", "little", "moments", "moment", "work", "soft", "best", "full",
+    "part", "video", "videos", "live", "today", "news", "update", "latest", "watch", "first", "make",
+    "with", "from", "this", "that", "your", "what", "when", "here", "more", "most", "just", "only",
+    "every", "episode", "official", "shorts", "short", "vlog", "day", "days", "time", "look",
+}
+
+
 @app.get("/organizations/{org_id}/content")
 def content(
     org_id: int,
@@ -397,6 +412,17 @@ def content(
         for pid in t["post_ids"]:
             topics_of.setdefault(pid, []).append(t["topic"])
     tracked = [t.lower() for t in ds.cfg["topics"]]
+    # "My niche topics": the topics saved in Workspace settings; if none are saved,
+    # the topics our own posts already cover (so the filter always works).
+    if tracked:
+        niche, niche_source = ds.cfg["topics"], "workspace"
+        niche_ids = set()
+    else:
+        ours = [t for t in topic_rows if t["our_posts"] >= 2 and len(t["topic"]) >= 4
+                and t["topic"] not in GENERIC_TOPIC_WORDS][:15]
+        niche, niche_source = [t["topic"] for t in ours], "our_posts"
+        niche_ids = {pid for t in ours for pid in t["post_ids"]}
+    niche_terms = [t.lower() for t in niche]
 
     items = [p for p in ds.posts if include_ours or not ds.is_us(p)]
     if account_id:
@@ -415,9 +441,8 @@ def content(
         items = [p for p in items if (ids is not None and p.id in ids) or tl in p.title.lower()
                  or any(tl == x.lower() for x in (p.tags or []))]
     if my_topics:
-        if not tracked:
-            raise HTTPException(400, "Add topics in Workspace settings to use this filter.")
-        items = [p for p in items if any(t in (p.title + " " + " ".join(p.tags or [])).lower() for t in tracked)]
+        items = [p for p in items if p.id in niche_ids
+                 or any(t in (p.title + " " + " ".join(p.tags or [])).lower() for t in niche_terms)]
     if q:
         ql = q.lower()
         items = [p for p in items if ql in p.title.lower() or any(ql in x.lower() for x in (p.tags or []))]
@@ -440,7 +465,8 @@ def content(
             "platforms": sorted({a.platform for a in ds.accounts}),
             "formats": sorted({ds.format(p) for p in ds.posts if ds.format(p)}),
             "topics": [t["topic"] for t in topic_rows[:40]],
-            "my_topics": ds.cfg["topics"],
+            "my_topics": niche,
+            "my_topics_source": niche_source,  # "workspace" (saved in settings) or "our_posts" (derived)
         },
         "definitions": {"relative": "Views ÷ the same account's median views (posts 48h+ old, last 90 days). Blank when the platform has no views or the account has fewer than 5 such posts."},
         "freshness": ds.freshness(),
@@ -480,7 +506,9 @@ def history(org_id: int, days: int = Query(default=90, ge=1, le=365), session: S
         out.append({"id": a.id, "name": a.name, "platform": a.platform, "is_us": a.is_us,
                     "audience": audience, "audience_growth": growth, "weekly": weekly,
                     "baseline": ds.baseline.get(a.id)})
-    our_recent = sorted((p for p in ds.posts if ds.is_us(p) and utc(p.published_at) >= ds.now - timedelta(days=30)),
+    # Only posts from platforms that report views (website/RSS articles have none).
+    our_recent = sorted((p for p in ds.posts if ds.is_us(p) and p.views is not None
+                         and utc(p.published_at) >= ds.now - timedelta(days=30)),
                         key=lambda p: p.published_at, reverse=True)
     return {
         "days": days, "accounts": out,

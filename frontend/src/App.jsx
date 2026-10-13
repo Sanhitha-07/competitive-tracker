@@ -173,6 +173,13 @@ export default function App() {
           setOrgId(o.id);
           setTab("workspace");
         }}
+        onRemoved={(id) => {
+          const rest = orgs.filter((o) => o.id !== id);
+          setOrgs(rest);
+          // If the open workspace was removed, switch to the first one left.
+          if (id === orgId) setOrgId(rest[0]?.id ?? null);
+          setNotice(`Workspace removed.`);
+        }}
       />
 
       {error && (

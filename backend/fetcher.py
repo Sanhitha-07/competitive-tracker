@@ -12,6 +12,10 @@ SNAPSHOT_EVERY = timedelta(hours=6)       # at most one metric snapshot per post
 QUESTION_VIDEOS_PER_ACCOUNT = 3           # videos whose comments are read per account per refresh
 QUESTION_RECHECK = timedelta(days=7)      # don't re-read the same video's comments for a week
 QUESTION_MIN_BUDGET = 200                 # keep this many YouTube units for the next refresh
+# A refresh reads each channel's latest videos. Busy channels (news) push older videos out of
+# that list within a day or two, so their views would freeze. These settings re-check them.
+METRICS_RECHECK_DAYS = 90                 # same period the "usual views" baseline uses
+METRICS_RECHECK_MAX = 500                 # per account per refresh = at most 10 YouTube units
 
 
 def _utc(dt):
@@ -58,6 +62,37 @@ def _save(session: Session, competitor: Competitor, items, now):
     return added, snapshots
 
 
+def _refresh_older_metrics(session, competitor, now):
+    """Update views/likes/comments of saved YouTube videos that weren't in this refresh's latest batch."""
+    if competitor.platform != "youtube" or youtube.budget_left() < QUESTION_MIN_BUDGET:
+        return 0
+    since = now - timedelta(days=METRICS_RECHECK_DAYS)
+    stale = sorted(
+        (p for p in session.exec(select(Post).where(Post.competitor_id == competitor.id)).all()
+         if _utc(p.published_at) >= since and (p.metrics_updated_at is None or _utc(p.metrics_updated_at) < now)),
+        key=lambda p: p.published_at, reverse=True,
+    )[:METRICS_RECHECK_MAX]
+    by_vid = {youtube.video_id(p.link): p for p in stale}
+    by_vid.pop(None, None)
+    if not by_vid:
+        return 0
+    stats = youtube.video_stats(list(by_vid))
+
+    last_snap = {}
+    for snap in session.exec(select(MetricSnapshot).where(MetricSnapshot.post_id.in_([p.id for p in by_vid.values()]))).all():
+        if snap.post_id not in last_snap or _utc(snap.captured_at) > _utc(last_snap[snap.post_id]):
+            last_snap[snap.post_id] = snap.captured_at
+    for vid, st in stats.items():
+        post = by_vid[vid]
+        post.views, post.likes, post.comments = st["views"], st["likes"], st["comments"]
+        post.metrics_updated_at = now
+        session.add(post)
+        last = last_snap.get(post.id)
+        if last is None or now - _utc(last) >= SNAPSHOT_EVERY:
+            session.add(MetricSnapshot(post_id=post.id, captured_at=now, **st))
+    return len(stats)
+
+
 def _collect_questions(session, connector, competitor, now):
     """Read comments on a few of the account's most-viewed recent videos and keep the questions."""
     if not connector.supports_questions or youtube.budget_left() < QUESTION_MIN_BUDGET:
@@ -91,9 +126,10 @@ def fetch_org(session: Session, org_id: int, now=None):
             connector = connectors.get(c.platform)
             items = connector.fetch(c)
             added, snapshots = _save(session, c, items, now)
-            questions = 0
+            questions = updated_older = 0
             if not quota_hit:
                 try:
+                    updated_older = _refresh_older_metrics(session, c, now)
                     questions = _collect_questions(session, connector, c, now)
                 except youtube.QuotaExceeded as exc:
                     quota_hit = str(exc)  # posts are saved; only the optional comment check stops
@@ -111,7 +147,7 @@ def fetch_org(session: Session, org_id: int, now=None):
             results.append({"account": c.name, "platform": c.platform, "added": 0, "error": c.last_error})
             continue
         results.append({"account": c.name, "platform": c.platform, "added": added, "found": len(items),
-                        "snapshots": snapshots, "questions": questions, "error": None})
+                        "snapshots": snapshots, "questions": questions, "updated_older": updated_older, "error": None})
         added_total += added
     return {
         "added": added_total,

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { addOrganization, period } from "../api";
+import WorkspacePicker from "./WorkspacePicker";
 
 // Workspace picker plus an "Add workspace" form. Full settings live in the Workspace tab.
-export default function OrgBar({ orgs, orgId, config, options, onSelect, onAdded }) {
+export default function OrgBar({ orgs, orgId, config, options, onSelect, onAdded, onRemoved }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: "", creator_type: "", category: "other" });
   const [error, setError] = useState("");
@@ -27,13 +28,10 @@ export default function OrgBar({ orgs, orgId, config, options, onSelect, onAdded
 
   return (
     <div className="orgbar">
-      <label className="org-select">
-        <span>Workspace</span>
-        <select id="org-select" value={orgId ?? ""} onChange={(e) => onSelect(Number(e.target.value))}>
-          {orgs.length === 0 && <option value="">No workspaces yet</option>}
-          {orgs.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
-        </select>
-      </label>
+      <div className="org-select">
+        <label htmlFor="org-select">Workspace</label>
+        <WorkspacePicker orgs={orgs} orgId={orgId} onSelect={onSelect} onRemoved={onRemoved} />
+      </div>
       {config && (
         <span className="org-meta">
           {[typeLabel, config.industry_label, config.niche && config.industry !== "other" ? config.niche : null].filter(Boolean).join(" · ")}

@@ -151,6 +151,10 @@ export default function Explorer({ orgId, refreshKey }) {
   const toggle = (p) => setSelected((cur) => (cur.some((x) => x.id === p.id) ? cur.filter((x) => x.id !== p.id) : [...cur, p]));
   const f = data?.facets;
   const active = Object.entries(filters).some(([k, v]) => v !== EMPTY[k]);
+  const niche = f?.my_topics || [];
+  const nicheHint = !niche.length
+    ? "No niche topics yet. Add topics in Workspace settings."
+    : `${f.my_topics_source === "workspace" ? "Topics from Workspace settings" : "Topics your own posts cover"}: ${niche.join(", ")}`;
 
   return (
     <section className="panel">
@@ -194,12 +198,26 @@ export default function Explorer({ orgId, refreshKey }) {
           <option value="views">Most views</option>
           <option value="relative">Most above usual</option>
         </select>
-        <label className="check small" title={f?.my_topics?.length ? f.my_topics.join(", ") : "Add topics in Workspace settings"}>
-          <input type="checkbox" checked={filters.my_topics} onChange={set("my_topics")} disabled={!f?.my_topics?.length} /> My niche topics
+        <label className="check small" title={nicheHint}>
+          <input type="checkbox" checked={filters.my_topics} onChange={set("my_topics")} /> My niche topics
         </label>
         <label className="check small"><input type="checkbox" checked={filters.include_ours} onChange={set("include_ours")} /> Include our posts</label>
         {active && <button className="btn ghost small-btn" onClick={() => { setFilters(EMPTY); setSearch(""); }}>Clear filters</button>}
       </div>
+
+      {filters.my_topics && f && (
+        <p className="notice small">
+          {niche.length ? (
+            <>
+              Showing posts about {f.my_topics_source === "workspace" ? "the topics saved in Workspace settings" : "topics your own posts already cover"}:{" "}
+              <b>{niche.slice(0, 8).join(", ")}</b>{niche.length > 8 ? ` and ${niche.length - 8} more` : ""}.
+              {f.my_topics_source !== "workspace" && " To choose them yourself, add topics in the Workspace tab."}
+            </>
+          ) : (
+            <>No niche topics found yet: your own posts don't share clear topics. Add topics in the Workspace tab to use this filter.</>
+          )}
+        </p>
+      )}
 
       {selected.length > 0 && (
         <div className="compare-bar">
