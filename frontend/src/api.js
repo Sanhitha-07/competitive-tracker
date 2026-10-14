@@ -70,6 +70,14 @@ export const getContent = (orgId, filters) => request(`/organizations/${orgId}/c
 export const getHistory = (orgId, days = 90) => request(`/organizations/${orgId}/history?days=${days}`);
 export const getPostHistory = (orgId, postId) => request(`/organizations/${orgId}/posts/${postId}/history`);
 
+// Dashboard (plain-language briefing + chart data) and the optional AI briefing
+export const getDashboard = (orgId) => request(`/organizations/${orgId}/dashboard`);
+export const getAiBriefing = (orgId) => request(`/organizations/${orgId}/briefing/ai`, { method: "POST" });
+
+// Internet trends matched to the workspace
+export const getTrends = (orgId) => request(`/organizations/${orgId}/trends`);
+export const refreshTrends = (orgId) => request(`/organizations/${orgId}/trends/refresh`, { method: "POST" });
+
 // Opportunities: recommendation -> brief -> MediaOps draft -> scheduled -> published -> evaluated
 const opp = (orgId, id = "") => `/organizations/${orgId}/opportunities${id !== "" ? `/${id}` : ""}`;
 export const getOpportunities = (orgId) => request(opp(orgId));
@@ -137,10 +145,18 @@ export function period(hours) {
   return hours >= 48 ? `the last ${Math.round(hours / 24)} days` : `the last ${hours} hours`;
 }
 
-export const PLATFORM_LABEL = { rss: "Website", youtube: "YouTube" };
+export const PLATFORM_LABEL = { rss: "Website", youtube: "YouTube", instagram: "Instagram", facebook: "Facebook" };
+// What a post's performance is measured with (competitors' views aren't public on Instagram/Facebook).
+export const METRIC_WORD = { youtube: "views", instagram: "interactions", facebook: "interactions" };
+export const AUDIENCE_WORD = { youtube: "subscribers", instagram: "followers", facebook: "followers" };
 export const FORMAT_LABEL = {
   short: "Short", video: "Video", long: "Long-form", live: "Live stream", article: "Article",
-  image: "Image", podcast: "Podcast", newsletter: "Newsletter",
+  image: "Image", podcast: "Podcast", newsletter: "Newsletter", reel: "Reel", carousel: "Carousel",
+  text: "Text post", link: "Link post", other: "Other",
+};
+export const TAB_LABEL = {
+  dashboard: "Dashboard", trends: "Trends", suggestions: "Suggestions", performance: "Performance",
+  gaps: "Coverage Gaps", explorer: "Content Explorer", accounts: "Accounts",
 };
 export const STATUS_LABEL = {
   saved: "Saved", brief: "Brief ready", in_mediaops: "In MediaOps", scheduled: "Scheduled",

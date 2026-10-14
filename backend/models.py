@@ -8,6 +8,8 @@ Post             = one story or video from an account. Always store published_at
 MetricSnapshot   = a post's public numbers at one point in time (history)
 AccountSnapshot  = an account's public numbers at one point in time (history)
 AudienceQuestion = a question found in public comments on a tracked video (no author stored)
+TrendItem        = something trending on the internet (Google Trends, news, YouTube trending)
+                   that matched a workspace, with its sensitivity rating
 Opportunity      = a recommendation the user acted on, and everything that followed:
                    brief -> MediaOps draft -> published post -> measured result
 """
@@ -39,6 +41,8 @@ class Organization(SQLModel, table=True):
     platforms: Optional[list] = Field(default=None, sa_column=Column(JSON))
     timezone: Optional[str] = None  # e.g. "Asia/Kolkata"; used for posting-time patterns
     time_sensitive: Optional[bool] = None  # show First to Publish (news, launches, live events)
+    region: Optional[str] = None  # 2-letter country code for trends, e.g. "IN"
+    brand_safety: Optional[str] = None  # "strict" | "standard" | "newsroom"; default from creator type
 
 
 class Competitor(SQLModel, table=True):
@@ -48,9 +52,9 @@ class Competitor(SQLModel, table=True):
     platform: str = "rss"
     source: str  # RSS feed link, or the YouTube handle / channel link the user typed
     is_us: bool = False
-    channel_id: Optional[str] = None  # YouTube channel ID, filled in automatically
-    thumbnail: Optional[str] = None   # YouTube channel logo URL
-    subscribers: Optional[int] = None
+    channel_id: Optional[str] = None  # platform account ID (YouTube channel, Instagram user, Facebook Page)
+    thumbnail: Optional[str] = None   # account logo URL
+    subscribers: Optional[int] = None  # audience size: subscribers (YouTube) or followers (Instagram, Facebook)
     last_error: Optional[str] = None
     last_fetched_at: Optional[datetime] = None
 
@@ -67,10 +71,12 @@ class Post(SQLModel, table=True):
     thumbnail: Optional[str] = None
     format: Optional[str] = None  # connector-defined: "short", "video", "long", "live", "article"
     tags: Optional[list] = Field(default=None, sa_column=Column(JSON))  # creator tags / RSS categories
-    # YouTube only
+    # Public numbers; None when the platform doesn't expose them (RSS has none,
+    # Instagram views are Reels-only, Facebook "likes" = all reactions)
     views: Optional[int] = None
     likes: Optional[int] = None
     comments: Optional[int] = None
+    shares: Optional[int] = None
     duration_seconds: Optional[int] = None
     metrics_updated_at: Optional[datetime] = None
     questions_checked_at: Optional[datetime] = None
@@ -83,6 +89,7 @@ class MetricSnapshot(SQLModel, table=True):
     views: Optional[int] = None
     likes: Optional[int] = None
     comments: Optional[int] = None
+    shares: Optional[int] = None
 
 
 class AccountSnapshot(SQLModel, table=True):
@@ -127,3 +134,23 @@ class Opportunity(SQLModel, table=True):
     history: list = Field(default_factory=list, sa_column=Column(JSON))  # [{status, at, note}]
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+
+
+class TrendItem(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("org_id", "key"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(foreign_key="organization.id", index=True)
+    key: str  # source + normalized title, so the same trend isn't saved twice
+    source: str  # "google_trends" | "google_news" | "youtube_trending"
+    title: str
+    link: Optional[str] = None
+    summary: Optional[str] = None
+    traffic: Optional[str] = None       # e.g. "10000+" searches (Google Trends only)
+    volume: Optional[int] = None        # articles/videos found for a topic search
+    momentum: Optional[float] = None    # recent volume ÷ earlier volume (topic searches)
+    query: Optional[str] = None         # the workspace topic that was searched, if any
+    picture: Optional[str] = None
+    published_at: Optional[datetime] = None
+    fetched_at: datetime = Field(default_factory=_now, index=True)
+    related: list = Field(default_factory=list, sa_column=Column(JSON))  # [{title, link, source, published_at}]

@@ -1,10 +1,20 @@
 import { useEffect, useState } from "react";
-import { addAccount, ago, compact, deleteAccount, getAccounts, PLATFORM_LABEL } from "../api";
+import { addAccount, ago, AUDIENCE_WORD, compact, deleteAccount, getAccounts, PLATFORM_LABEL } from "../api";
 import ChannelInput from "../components/ChannelInput";
 
 const EMPTY = { name: "", platform: "youtube", source: "", is_us: false };
+const PLACEHOLDER = {
+  instagram: "@username or instagram.com/username",
+  facebook: "facebook.com/PageName or the Page username",
+  rss: "https://…/rss",
+};
+const MISSING = {
+  youtube: "Add YOUTUBE_API_KEY to backend\\.env to add YouTube channels (see SETUP.md).",
+  instagram: "Instagram needs META_ACCESS_TOKEN and META_IG_USER_ID in backend\\.env (see SETUP.md). Only Business and Creator accounts can be tracked.",
+  facebook: "Facebook needs META_ACCESS_TOKEN in backend\\.env, and Page Public Content Access for Pages you don't manage (see SETUP.md).",
+};
 
-export default function Accounts({ orgId, onChanged, platforms }) {
+export default function Accounts({ orgId, onChanged, platforms, integrations }) {
   const [list, setList] = useState([]);
   const [error, setError] = useState("");
   const [form, setForm] = useState(EMPTY);
@@ -29,7 +39,7 @@ export default function Accounts({ orgId, onChanged, platforms }) {
     e.preventDefault();
     const source = form.source.trim();
     if (!form.name.trim() || !source) {
-      setFormError(form.platform === "youtube" ? "Enter a name and a YouTube handle." : "Enter a name and an RSS link.");
+      setFormError(`Enter a name and the ${form.platform === "rss" ? "RSS link" : `${PLATFORM_LABEL[form.platform]} account`}.`);
       return;
     }
     if (form.platform === "rss" && !/^https?:\/\//i.test(source)) {
@@ -61,6 +71,10 @@ export default function Accounts({ orgId, onChanged, platforms }) {
   }
 
   const isYT = form.platform === "youtube";
+  const ready = form.platform === "rss" || !integrations ? true
+    : form.platform === "youtube" ? integrations.youtube
+      : form.platform === "instagram" ? integrations.meta?.instagram : integrations.meta?.facebook;
+  const current = platforms?.supported.find((p) => p.id === form.platform);
 
   return (
     <section className="panel">
@@ -88,7 +102,7 @@ export default function Accounts({ orgId, onChanged, platforms }) {
           <input id="acc-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. the creator or brand name" />
         </label>
         <div className="field grow">
-          <label htmlFor="acc-source">{isYT ? "YouTube channel (name, @handle or link)" : "RSS link"}</label>
+          <label htmlFor="acc-source">{current?.source_label || "RSS link"}</label>
           {isYT ? (
             <ChannelInput
               id="acc-source"
@@ -107,7 +121,7 @@ export default function Accounts({ orgId, onChanged, platforms }) {
               id="acc-source"
               value={form.source}
               onChange={(e) => setForm({ ...form, source: e.target.value })}
-              placeholder="https://…/rss"
+              placeholder={PLACEHOLDER[form.platform] || ""}
             />
           )}
         </div>
@@ -118,6 +132,8 @@ export default function Accounts({ orgId, onChanged, platforms }) {
         <button className="btn primary" type="submit" disabled={saving}>{saving ? "Checking…" : "Add"}</button>
       </form>
       {formError && <p className="error-text">{formError}</p>}
+      {!ready && <p className="notice small">{MISSING[form.platform]}</p>}
+      {ready && current?.quota_note && <p className="muted small">{current.quota_note}</p>}
 
       {error ? (
         <div className="empty"><b>Accounts not available</b><span>{error}</span></div>
@@ -127,7 +143,7 @@ export default function Accounts({ orgId, onChanged, platforms }) {
         <div className="table-wrap">
           <table>
             <thead>
-              <tr><th>Name</th><th>Platform</th><th>Link or handle</th><th>Subscribers</th><th>Status</th><th></th></tr>
+              <tr><th>Name</th><th>Platform</th><th>Link or handle</th><th>Audience</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {list.map((a) => (
@@ -141,7 +157,7 @@ export default function Accounts({ orgId, onChanged, platforms }) {
                   </td>
                   <td><span className={`plat ${a.platform}`}>{PLATFORM_LABEL[a.platform]}</span></td>
                   <td className="link-cell">{a.source}</td>
-                  <td className="num">{a.platform === "youtube" ? compact(a.subscribers) : "–"}</td>
+                  <td className="num">{a.subscribers != null ? <>{compact(a.subscribers)} <span className="muted small">{AUDIENCE_WORD[a.platform]}</span></> : "–"}</td>
                   <td>{a.last_error ? <span className="pill bad" title={a.last_error}>Last refresh failed</span> : <span className="muted small">{a.last_fetched_at ? `Refreshed ${ago(a.last_fetched_at)}` : "Not refreshed yet"}</span>}</td>
                   <td><button className="btn ghost small-btn" onClick={() => onDelete(a.id)}>Remove</button></td>
                 </tr>

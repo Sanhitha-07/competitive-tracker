@@ -1,7 +1,9 @@
 """Compare our performance with competitors' per platform, and turn the differences into findings.
 
 Only metrics a platform really exposes are compared (see connectors.py for definitions):
-YouTube has views, likes, comments and length; a website feed only has posting activity.
+YouTube has views, likes, comments and length; Instagram and Facebook have followers and
+per-post likes/reactions, comments (and shares on Facebook), so they're compared by interactions
+and engagement per follower; a website feed only has posting activity.
 
 Works on any objects with these attributes:
   account: id, name, is_us, platform, subscribers
@@ -12,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean, median
 from zoneinfo import ZoneInfo
 
-from connectors import SHORT_MAX_SECONDS, YouTubeConnector
+from connectors import SHORT_MAX_SECONDS, YouTubeConnector, interactions, performance_metric
 
 PERF_DAYS = 30            # compare videos from the last 30 days
 MIN_AGE_HOURS = 24        # very new videos haven't collected views yet; leave them out of view averages
@@ -243,9 +245,21 @@ def compare(accounts, posts, gaps_count=0, now=None, tz=DEFAULT_TZ):
     )[:5]
 
     other = defaultdict(list)
+    social = defaultdict(list)
     for a in accounts:
-        if a.platform != "youtube":
-            other[a.platform].append(a)
+        if a.platform == "youtube":
+            continue
+        (social if performance_metric(a.platform) == "interactions" else other)[a.platform].append(a)
+
+    yt_suggestions = suggestions(us, market, gaps_count)
+    for sg in yt_suggestions:
+        sg["platform"] = "youtube"
+    platforms = {}
+    if yt_accounts:
+        platforms["youtube"] = {"metric": "views", "accounts": sorted(rows, key=lambda r: (not r["is_us"], r["name"])),
+                                "us": us, "market": market, "suggestions": yt_suggestions}
+    for platform, accs in social.items():
+        platforms[platform] = social_compare(platform, accs, posts, now, tz, start)
 
     return {
         "days": PERF_DAYS,
@@ -262,5 +276,158 @@ def compare(accounts, posts, gaps_count=0, now=None, tz=DEFAULT_TZ):
             platform: posting_stats(accs, [p for p in posts if p.competitor_id in {a.id for a in accs}], now)
             for platform, accs in other.items()
         },
-        "suggestions": suggestions(us, market, gaps_count),
+        "suggestions": yt_suggestions,
+        # Every platform with audience numbers, in one shape: {metric, accounts, us, market, suggestions, top_posts}
+        "platforms": platforms,
+    }
+
+
+# ---- Instagram and Facebook: compared by interactions and engagement per follower ----
+
+SOCIAL_LABEL = {"instagram": "Instagram", "facebook": "Facebook"}
+# The format each platform's algorithm currently favours, compared as a share of posts.
+VIDEO_FORMATS = {"instagram": ("reel",), "facebook": ("video",)}
+VIDEO_LABEL = {"instagram": "Reels", "facebook": "videos"}
+
+
+def social_stats(posts, now, followers, tz=DEFAULT_TZ, history_start=None, platform="instagram"):
+    """Numbers for one Instagram/Facebook account's posts from the last PERF_DAYS days."""
+    if not posts:
+        return None
+    span_days = _span_days(posts, now, history_start)
+    mature = [p for p in posts if now - _utc(p.published_at) >= timedelta(hours=MIN_AGE_HOURS)] or posts
+    inter = [interactions(p) or 0 for p in mature]
+    per_follower = [i / followers * 100 for i in inter] if followers else []
+    by_slot = defaultdict(list)
+    for p, i in zip(mature, inter):
+        by_slot[_time_slot(_utc(p.published_at).astimezone(tz).hour)].append(i)
+    best_slot = max(by_slot, key=lambda sl: median(by_slot[sl])) if by_slot else None
+
+    by_format = defaultdict(list)
+    for p in mature:
+        by_format[p.format or "image"].append(p)
+    formats = {}
+    for f, ps in by_format.items():
+        fi = [interactions(p) or 0 for p in ps]
+        formats[f] = {"posts": len(ps), "median_interactions": round(median(fi)),
+                      "engagement_per_follower": round(mean(fi) / followers * 100, 2) if followers else None}
+    video = VIDEO_FORMATS.get(platform, ())
+    reel_views = [p.views for p in mature if p.views is not None]
+    likes_hidden = sum(1 for p in mature if p.likes is None)
+    return {
+        "posts": len(posts),
+        "mature_posts": len(mature),
+        "per_week": round(len(posts) / span_days * 7, 1),
+        "median_interactions": round(median(inter)) if inter else 0,
+        "avg_interactions": round(mean(inter)) if inter else 0,
+        "avg_likes": round(mean(p.likes for p in mature if p.likes is not None)) if len(mature) > likes_hidden else None,
+        "avg_comments": round(mean(p.comments or 0 for p in mature)),
+        "avg_shares": round(mean(p.shares for p in mature if p.shares is not None)) if any(p.shares is not None for p in mature) else None,
+        "engagement_rate": round(mean(per_follower), 2) if per_follower else None,
+        "video_pct": round(sum(1 for p in posts if p.format in video) / len(posts) * 100),
+        "median_reel_views": round(median(reel_views)) if reel_views else None,
+        "likes_hidden_posts": likes_hidden,
+        "best_time": best_slot,
+        "best_time_sample": len(by_slot.get(best_slot, [])) if best_slot else 0,
+        "formats": formats,
+    }
+
+
+def _social_market(rows):
+    if not rows:
+        return None
+    m = {"accounts": len(rows), "total_posts": sum(r["posts"] for r in rows)}
+    for k in ("posts", "per_week", "median_interactions", "avg_interactions", "engagement_rate", "video_pct", "median_reel_views"):
+        vals = [r[k] for r in rows if r.get(k) is not None]
+        m[k] = round(mean(vals), 2 if k in ("per_week", "engagement_rate") else None) if vals else None
+    slots = Counter(r["best_time"] for r in rows if r["best_time"])
+    m["best_time"] = slots.most_common(1)[0][0] if slots else None
+    return m
+
+
+def social_suggestions(platform, us, market):
+    """Findings for Instagram/Facebook, in the same shape as YouTube's suggestions()."""
+    if not us or not market:
+        return []
+    out = []
+    label = SOCIAL_LABEL.get(platform, platform)
+
+    def add(tone, title, detail, metric=None, ours=None, theirs=None, kind="benchmark"):
+        out.append({"tone": tone, "title": title, "detail": detail, "metric": metric, "ours": ours,
+                    "theirs": theirs, "kind": kind, "platform": platform})
+
+    d = _pct_diff(us["per_week"], market["per_week"])
+    if d <= -30:
+        add("lagging", f"Post more often on {label}",
+            f"You post {us['per_week']} times a week on {label}; competitors average {market['per_week']}. Aim for at least {round(market['per_week'] * 0.8, 1)} a week.",
+            "per_week", us["per_week"], market["per_week"], "publishing_pattern")
+    elif d >= 30:
+        add("good", f"You post more often than competitors on {label}",
+            f"{us['per_week']} posts a week vs the competitors' {market['per_week']}. Keep quality up with the volume.",
+            "per_week", us["per_week"], market["per_week"], "publishing_pattern")
+
+    if us["engagement_rate"] is not None and market["engagement_rate"]:
+        d = _pct_diff(us["engagement_rate"], market["engagement_rate"])
+        if d <= -20:
+            add("lagging", f"Engagement per follower is low on {label}",
+                f"Your posts get interactions from {us['engagement_rate']}% of your followers vs {market['engagement_rate']}% for competitors. "
+                "Ask a question in the caption, reply to comments in the first hour, and look at what their best posts have in common.",
+                "engagement_per_follower", us["engagement_rate"], market["engagement_rate"])
+        elif d >= 20:
+            add("good", f"Strong engagement on {label}",
+                f"{us['engagement_rate']}% of your followers interact with a typical post vs {market['engagement_rate']}% for competitors.",
+                "engagement_per_follower", us["engagement_rate"], market["engagement_rate"])
+
+    gap = (market["video_pct"] or 0) - (us["video_pct"] or 0)
+    vlabel = VIDEO_LABEL.get(platform, "videos")
+    if gap >= 15:
+        add("lagging", f"Competitors post more {vlabel}",
+            f"{round(market['video_pct'])}% of competitors' {label} posts are {vlabel} vs {us['video_pct']}% of yours. Test a few and compare them with your usual.",
+            "video_pct", us["video_pct"], market["video_pct"], "format_test")
+    elif gap <= -15:
+        add("info", f"You rely more on {vlabel}",
+            f"{us['video_pct']}% of your {label} posts are {vlabel} vs {round(market['video_pct'])}% for competitors.",
+            "video_pct", us["video_pct"], market["video_pct"], "format_test")
+
+    if market["best_time"] and us["best_time"] and market["best_time"] != us["best_time"]:
+        add("info", f"Test a different posting time on {label}",
+            f"Competitors' best-performing posts go out in the {market['best_time']} slot. Yours do best in the {us['best_time']} slot.",
+            "best_time", us["best_time"], market["best_time"], "publishing_pattern")
+
+    if us["posts"] < MIN_VIDEOS or (market["posts"] or 0) < MIN_VIDEOS:
+        add("info", "Based on few posts",
+            f"You or your competitors posted fewer than {MIN_VIDEOS} times on {label} in the last {PERF_DAYS} days, so treat these numbers as a rough guide.",
+            kind="status")
+    return out
+
+
+def social_compare(platform, accounts, posts, now, tz=DEFAULT_TZ, start=None):
+    since = now - timedelta(days=PERF_DAYS)
+    start = start or _history_start(posts)
+    ids = {a.id for a in accounts}
+    by_account = defaultdict(list)
+    for p in posts:
+        if p.competitor_id in ids and _utc(p.published_at) >= since:
+            by_account[p.competitor_id].append(p)
+    rows = []
+    for a in accounts:
+        stats = social_stats(by_account.get(a.id, []), now, a.subscribers, tz, start.get(a.id), platform)
+        rows.append({"id": a.id, "name": a.name, "is_us": a.is_us, "subscribers": a.subscribers, "stats": stats})
+    ours = [r["stats"] for r in rows if r["is_us"] and r["stats"]]
+    us = ours[0] if ours else None
+    market = _social_market([r["stats"] for r in rows if not r["is_us"] and r["stats"]])
+    names = {a.id: a.name for a in accounts}
+    top = sorted((p for a in accounts if not a.is_us for p in by_account.get(a.id, [])
+                  if now - _utc(p.published_at) >= timedelta(hours=MIN_AGE_HOURS)),
+                 key=lambda p: interactions(p) or 0, reverse=True)[:5]
+    return {
+        "metric": "interactions",
+        "accounts": sorted(rows, key=lambda r: (not r["is_us"], r["name"])),
+        "us": us, "market": market,
+        "suggestions": social_suggestions(platform, us, market),
+        "top_posts": [{"account": names[p.competitor_id], "title": p.title, "link": p.link, "format": p.format,
+                       "interactions": interactions(p), "likes": p.likes, "comments": p.comments,
+                       "shares": getattr(p, "shares", None), "views": p.views,
+                       "published_at": _utc(p.published_at).isoformat(), "thumbnail": getattr(p, "thumbnail", None)}
+                      for p in top],
     }

@@ -9,6 +9,8 @@ Results:            /organizations/{org_id}/results (everything the dashboard ne
 Content Explorer:   /organizations/{org_id}/content
 History:            /organizations/{org_id}/history, /organizations/{org_id}/posts/{post_id}/history
 Opportunities:      /organizations/{org_id}/opportunities (+ /{opp_id}, /brief, /mediaops, /calendar.ics, /evaluate)
+Dashboard:          /organizations/{org_id}/dashboard (+ POST /briefing/ai for the optional AI briefing)
+Trends:             /organizations/{org_id}/trends (+ POST /trends/refresh)
 
     run_api.bat      then open http://localhost:8000/docs
 """
@@ -22,10 +24,15 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, select
 
+import ai
+import config
 import connectors
+import insights
 import mediaops
+import meta
 import opportunities as opps
 import recommend
+import trends
 import workspace
 import youtube
 from analysis import analyse
@@ -33,7 +40,7 @@ from dataset import Dataset, iso, utc
 from db import create_tables, get_session
 from fetcher import fetch_org
 from models import (AccountSnapshot, AudienceQuestion, Competitor, MetricSnapshot, Opportunity,
-                    Organization, Post)
+                    Organization, Post, TrendItem)
 from performance import compare
 from topics import STATUS_LABELS
 
@@ -56,6 +63,13 @@ def meta_options():
     """Choices for the workspace form and what each platform can measure."""
     return {**workspace.options(), "platforms": connectors.describe(),
             "youtube_quota": {"used_today": youtube.units_used(), "left": youtube.budget_left()},
+            "integrations": {
+                "youtube": bool(youtube.YOUTUBE_API_KEY),
+                "meta": meta.configured(),
+                "ai": ai.configured(),
+                "trends": {"google_trends": config.TRENDS_GOOGLE_TRENDS, "google_news": config.TRENDS_GOOGLE_NEWS,
+                           "youtube_trending": bool(youtube.YOUTUBE_API_KEY)},
+            },
             "mediaops_api": mediaops.configured()}
 
 
@@ -73,6 +87,8 @@ class WorkspaceIn(BaseModel):
     timezone: Optional[str] = None
     time_sensitive: Optional[bool] = None
     window_hours: Optional[int] = None
+    region: Optional[str] = None
+    brand_safety: Optional[str] = None
 
 
 class OrganizationIn(WorkspaceIn):
@@ -116,13 +132,19 @@ def _apply_config(org, data: WorkspaceIn):
             ZoneInfo(sent["timezone"])
         except (ZoneInfoNotFoundError, ValueError):
             raise HTTPException(400, "Unknown time zone. Use a name like Asia/Kolkata or America/New_York.")
+    if sent.get("region"):
+        sent["region"] = sent["region"].upper()
+        if sent["region"] not in workspace.REGIONS:
+            raise HTTPException(400, "Choose a country from the list.")
+    if sent.get("brand_safety") and sent["brand_safety"] not in workspace.BRAND_SAFETY:
+        raise HTTPException(400, "Choose a brand-safety level from the list.")
     if sent.get("window_hours") is not None and not 1 <= sent["window_hours"] <= 24 * 90:
         raise HTTPException(400, "The time window must be between 1 hour and 90 days.")
     for k in ("niche", "audience"):
         if k in sent and sent[k] is not None:
             sent[k] = sent[k].strip() or None
     for k, v in sent.items():
-        if k != "name" and (v is not None or k in ("niche", "audience", "creator_type", "time_sensitive")):
+        if k != "name" and (v is not None or k in ("niche", "audience", "creator_type", "time_sensitive", "brand_safety")):
             setattr(org, k, v)
 
 
@@ -143,6 +165,8 @@ def add_organization(data: OrganizationIn, session: Session = Depends(get_sessio
     org.category = workspace.industry_id(org)
     if not data.window_hours:  # default from the industry: news 24 hours, most creators 2-4 weeks
         org.window_hours = workspace.INDUSTRIES[org.category][1]
+    if data.goals is None and org.creator_type:  # starting goals for this kind of business; editable
+        org.goals = list(workspace.profile(org.creator_type)["goals"])
     session.add(org)
     session.commit()
     session.refresh(org)
@@ -171,6 +195,7 @@ def remove_organization(org_id: int, session: Session = Depends(get_session)):
         _delete_account_data(session, c.id)
         session.delete(c)
     session.exec(delete(Opportunity).where(Opportunity.org_id == org_id))
+    session.exec(delete(TrendItem).where(TrendItem.org_id == org_id))
     session.delete(org)
     session.commit()
 
@@ -232,6 +257,8 @@ def add_account(org_id: int, data: AccountIn, session: Session = Depends(get_ses
     account = Competitor(org_id=org_id, name=name, platform=data.platform, source=source, is_us=data.is_us)
     try:
         found = connector.resolve(source)  # check the account exists before saving
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     for k, v in found.items():
@@ -269,15 +296,22 @@ def youtube_suggest(q: str):
 
 
 def _label(platform):
-    return "YouTube channel" if platform == "youtube" else "RSS feed"
+    return {"youtube": "YouTube channel", "instagram": "Instagram account", "facebook": "Facebook Page"}.get(platform, "RSS feed")
 
 
 # ---- Fetch and results ----
 
 @app.post("/organizations/{org_id}/fetch")
 def fetch(org_id: int, session: Session = Depends(get_session)):
-    _org(session, org_id)
-    return fetch_org(session, org_id)
+    org = _org(session, org_id)
+    result = fetch_org(session, org_id)
+    # Trends are read on every Refresh too (cached for an hour); a failure never blocks the posts.
+    try:
+        result["trends"] = trends.refresh(session, org, trends.competitor_topics(_dataset(session, org_id)))
+    except Exception as exc:  # noqa: BLE001 - trends are optional
+        session.rollback()
+        result["trends"] = {"error": str(exc)[:200]}
+    return result
 
 
 def _load(session, org_id):
@@ -295,11 +329,18 @@ def _dataset(session, org_id, now=None):
     return Dataset(org, accounts, posts, questions, now)
 
 
-def _analyse_all(session, org_id):
+def _trend_items(session, ds):
+    return trends.load(session, ds, trends.competitor_topics(ds))
+
+
+def _analyse_all(session, org_id, with_trends=False):
     ds = _dataset(session, org_id)
     news = analyse(ds.posts, ds.accounts, window_hours=ds.org.window_hours)
     perf = compare(ds.accounts, ds.posts, gaps_count=len(news["gaps"]), tz=ds.tz)
-    recs = recommend.build(ds, perf, opps.learned_stats(session, org_id))
+    trend_items = _trend_items(session, ds)
+    recs = recommend.build(ds, perf, opps.learned_stats(session, org_id), trend_items)
+    if with_trends:
+        return ds, news, perf, recs, trend_items
     return ds, news, perf, recs
 
 
@@ -323,6 +364,47 @@ def results(org_id: int, session: Session = Depends(get_session)):
     return {"organization": ds.org, "config": ds.cfg, **news, "overview": overview, "performance": perf,
             "recommendations": recs, "readiness": recommend.readiness(ds, perf),
             "period": ds.period(), "freshness": ds.freshness()}
+
+
+@app.get("/organizations/{org_id}/dashboard")
+def dashboard(org_id: int, session: Session = Depends(get_session)):
+    """The Dashboard: plain-language briefing, KPIs and chart data for the period."""
+    ds, _, perf, recs, trend_items = _analyse_all(session, org_id, with_trends=True)
+    ids = [a.id for a in ds.accounts]
+    snaps = {}
+    if ids:
+        for sn in session.exec(select(AccountSnapshot).where(AccountSnapshot.competitor_id.in_(ids))).all():
+            snaps.setdefault(sn.competitor_id, []).append(sn)
+    return {**insights.build(ds, perf, recs, trend_items, snaps), "config": ds.cfg, "ai_available": ai.configured()}
+
+
+@app.post("/organizations/{org_id}/briefing/ai")
+def ai_briefing(org_id: int, session: Session = Depends(get_session)):
+    """Optional: Claude rewrites the briefing and suggests content ideas from the dashboard numbers."""
+    data = dashboard(org_id, session)
+    try:
+        return ai.briefing(org_id, insights.ai_input(data, data["config"]))
+    except ValueError as exc:
+        raise HTTPException(400 if not ai.configured() else 502, str(exc))
+
+
+@app.get("/organizations/{org_id}/trends")
+def get_trends(org_id: int, session: Session = Depends(get_session)):
+    """Trends that match this workspace, with sensitivity, competitor coverage and angles."""
+    ds = _dataset(session, org_id)
+    last = trends.last_refresh(session, org_id)
+    return {"trends": _trend_items(session, ds), "last_refresh": iso(last), "config": ds.cfg,
+            "sources": {"google_trends": config.TRENDS_GOOGLE_TRENDS, "google_news": config.TRENDS_GOOGLE_NEWS,
+                        "youtube_trending": bool(youtube.YOUTUBE_API_KEY)},
+            "method": "Trends come from Google's daily searches and Google News for your country, and YouTube Trending "
+                      "for your industry's category. They're kept when they match your topics, niche, audience, industry "
+                      "or your competitors' topics. Sensitivity is a keyword check that errs on the side of caution."}
+
+
+@app.post("/organizations/{org_id}/trends/refresh")
+def refresh_trends(org_id: int, session: Session = Depends(get_session)):
+    org = _org(session, org_id)
+    return trends.refresh(session, org, trends.competitor_topics(_dataset(session, org_id)), force=True)
 
 
 @app.get("/organizations/{org_id}/overview")
@@ -428,7 +510,7 @@ def content(
         items = [p for p in items if ds.relative.get(p.id) is not None
                  and (lo is None or ds.relative[p.id] >= lo) and (hi is None or ds.relative[p.id] < hi)]
 
-    key = {"newest": lambda p: utc(p.published_at), "views": lambda p: p.views or -1,
+    key = {"newest": lambda p: utc(p.published_at), "views": lambda p: connectors.metric_value(p) or -1,
            "relative": lambda p: ds.relative.get(p.id) or -1}[sort]
     items.sort(key=key, reverse=True)
     page = items[offset:offset + limit]
@@ -442,7 +524,7 @@ def content(
             "topics": [t["topic"] for t in topic_rows[:40]],
             "my_topics": ds.cfg["topics"],
         },
-        "definitions": {"relative": "Views ÷ the same account's median views (posts 48h+ old, last 90 days). Blank when the platform has no views or the account has fewer than 5 such posts."},
+        "definitions": {"relative": "A post's views (YouTube) or interactions (Instagram, Facebook) ÷ the same account's median (posts 48h+ old, last 90 days). Blank when the platform has no public numbers or the account has fewer than 5 such posts."},
         "freshness": ds.freshness(),
     }
 
@@ -468,7 +550,7 @@ def history(org_id: int, days: int = Query(default=90, ge=1, le=365), session: S
         weekly = []
         for w in sorted(weeks):
             ps = weeks[w]
-            views = sorted(p.views for p in ps if p.views is not None)
+            views = sorted(connectors.metric_value(p) for p in ps if connectors.metric_value(p) is not None)
             rel = sorted(ds.relative[p.id] for p in ps if ds.relative.get(p.id) is not None)
             weekly.append({"week": w, "posts": len(ps), "median_views": views[len(views) // 2] if views else None,
                            "median_relative": rel[len(rel) // 2] if rel else None})
@@ -478,6 +560,7 @@ def history(org_id: int, days: int = Query(default=90, ge=1, le=365), session: S
             growth = {"from": first["subscribers"], "to": last["subscribers"],
                       "change": last["subscribers"] - first["subscribers"], "since": first["at"]}
         out.append({"id": a.id, "name": a.name, "platform": a.platform, "is_us": a.is_us,
+                    "metric": connectors.performance_metric(a.platform), "audience_label": connectors.audience_label(a.platform),
                     "audience": audience, "audience_growth": growth, "weekly": weekly,
                     "baseline": ds.baseline.get(a.id)})
     our_recent = sorted((p for p in ds.posts if ds.is_us(p) and utc(p.published_at) >= ds.now - timedelta(days=30)),
@@ -487,7 +570,7 @@ def history(org_id: int, days: int = Query(default=90, ge=1, le=365), session: S
         "our_recent_vs_baseline": [ds.post_card(p) for p in our_recent[:15]],
         "notes": ["Audience numbers are saved each time you click Refresh, so the history starts from your first refresh.",
                   "YouTube rounds subscriber counts, so small changes may not show.",
-                  "Weekly median views use each post's latest view count. Older weeks have had more time to collect views."],
+                  "Weekly medians use views on YouTube and interactions (likes + comments + shares) on Instagram and Facebook, from each post's latest numbers. Older weeks have had more time to collect them."],
     }
 
 
@@ -499,7 +582,8 @@ def post_history(org_id: int, post_id: int, session: Session = Depends(get_sessi
         raise HTTPException(404, "Post not found.")
     snaps = session.exec(select(MetricSnapshot).where(MetricSnapshot.post_id == post_id).order_by(MetricSnapshot.captured_at)).all()
     return {"post": {"id": post.id, "title": post.title, "link": post.link, "published_at": iso(post.published_at)},
-            "snapshots": [{"at": iso(s.captured_at), "views": s.views, "likes": s.likes, "comments": s.comments} for s in snaps]}
+            "snapshots": [{"at": iso(s.captured_at), "views": s.views, "likes": s.likes, "comments": s.comments,
+                           "shares": s.shares} for s in snaps]}
 
 
 # ---- Opportunities ----

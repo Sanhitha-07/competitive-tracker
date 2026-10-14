@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import Session, select
 
 import connectors
+import meta
 import youtube
 from models import AccountSnapshot, AudienceQuestion, Competitor, MetricSnapshot, Post
 
@@ -32,13 +33,13 @@ def _save(session: Session, competitor: Competitor, items, now):
     for item in {i["link"]: i for i in items}.values():  # same link twice in one read
         post = existing.get(item["link"])
         if post:
-            for field in ("views", "likes", "comments", "duration_seconds", "thumbnail", "tags", "format"):
+            for field in ("views", "likes", "comments", "shares", "duration_seconds", "thumbnail", "tags", "format", "title"):
                 if field in item:
                     setattr(post, field, item[field])
         else:
             post = Post(competitor_id=competitor.id, platform=competitor.platform, **item)
             added += 1
-        if item.get("views") is not None:
+        if any(item.get(k) is not None for k in ("views", "likes", "comments", "shares")):
             post.metrics_updated_at = now
         session.add(post)
         saved.append(post)
@@ -46,12 +47,12 @@ def _save(session: Session, competitor: Competitor, items, now):
 
     snapshots = 0
     for post in saved:
-        if post.views is None:
-            continue
+        if post.views is None and connectors.interactions(post) is None:
+            continue  # nothing measurable (e.g. RSS)
         last = last_snap.get(post.id)
         if last is None or now - _utc(last) >= SNAPSHOT_EVERY:
             session.add(MetricSnapshot(post_id=post.id, captured_at=now, views=post.views,
-                                       likes=post.likes, comments=post.comments))
+                                       likes=post.likes, comments=post.comments, shares=post.shares))
             snapshots += 1
     session.add(AccountSnapshot(competitor_id=competitor.id, captured_at=now,
                                 subscribers=competitor.subscribers, posts_tracked=len(existing) + added))
@@ -103,7 +104,7 @@ def fetch_org(session: Session, org_id: int, now=None):
             session.commit()
         except Exception as exc:
             session.rollback()
-            if isinstance(exc, youtube.QuotaExceeded):
+            if isinstance(exc, (youtube.QuotaExceeded, meta.RateLimited)):
                 quota_hit = str(exc)
             c.last_error = str(exc)[:300]
             session.add(c)
@@ -117,5 +118,6 @@ def fetch_org(session: Session, org_id: int, now=None):
         "added": added_total,
         "accounts": results,
         "quota": {"youtube_units_used_today": youtube.units_used(), "youtube_units_left": youtube.budget_left(),
+                  "meta_calls_this_hour": meta.calls_used(), "meta_calls_left": meta.budget_left(),
                   "warning": quota_hit},
     }

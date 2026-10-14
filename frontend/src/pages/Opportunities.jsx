@@ -186,7 +186,7 @@ function PublishDialog({ orgId, opp, onSaved, onClose }) {
     <Popup title="Mark as published" onClose={onClose}>
       <label className="field">
         <span>Link to the published post</span>
-        <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://www.youtube.com/watch?v=…" />
+        <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="Link to your published post (YouTube, Instagram, Facebook…)" />
       </label>
       <p className="muted small">After your next Refresh we find this post in your account and measure it 7 days after publishing.</p>
       {error && <p className="error-text">{error}</p>}
@@ -202,7 +202,7 @@ function Outcome({ o }) {
   return (
     <div className="outcome">
       <span className={`pill ${tone}`}>{label}</span>
-      <span className="small"> {o.views?.toLocaleString("en-IN")} views at 7 days vs your usual {o.baseline_views?.toLocaleString("en-IN")} ({o.ratio}×, baseline from {o.baseline_posts} posts)</span>
+      <span className="small"> {o.views?.toLocaleString("en-IN")} {o.metric || "views"} at 7 days vs your usual {o.baseline_views?.toLocaleString("en-IN")} ({o.ratio}×, baseline from {o.baseline_posts} posts)</span>
       <div className="muted small">{o.note}</div>
     </div>
   );
@@ -316,7 +316,7 @@ function Learned({ stats }) {
           ))}
         </tbody>
       </table>
-      <p className="muted small">After 3+ measured results, a kind that tends to beat your usual views is ranked a little higher. This is an association, not proof of cause.</p>
+      <p className="muted small">After 3+ measured results, a kind that tends to beat your usual results is ranked a little higher. This is an association, not proof of cause.</p>
     </div>
   );
 }

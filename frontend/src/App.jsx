@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchNews, getOptions, getOrganizations, getResults, setDisplayTimeZone } from "./api";
 import OrgBar from "./components/OrgBar";
 import OverviewCards from "./components/OverviewCards";
+import Dashboard from "./pages/Dashboard";
+import Trends from "./pages/Trends";
 import Gaps from "./pages/Gaps";
 import Speed from "./pages/Speed";
 import Performance from "./pages/Performance";
@@ -12,6 +14,8 @@ import Accounts from "./pages/Accounts";
 import Workspace from "./pages/Workspace";
 
 const TABS = [
+  { id: "dashboard", label: "Dashboard" },
+  { id: "trends", label: "Trends" },
   { id: "suggestions", label: "Suggestions" },
   { id: "opportunities", label: "Opportunities" },
   { id: "performance", label: "Performance" },
@@ -37,7 +41,7 @@ export default function App() {
   // A link ending in #performance (or another tab id) opens that tab.
   const [tab, setTab] = useState(() => {
     const fromLink = window.location.hash.slice(1);
-    return TABS.some((t) => t.id === fromLink) ? fromLink : "suggestions";
+    return TABS.some((t) => t.id === fromLink) ? fromLink : "dashboard";
   });
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -118,10 +122,12 @@ export default function App() {
       const res = await fetchNews(orgId);
       const failed = (res.accounts || []).filter((a) => a.error).map((a) => a.account);
       const questions = (res.accounts || []).reduce((n, a) => n + (a.questions || 0), 0);
+      const trendErr = (res.trends?.sources || []).filter((s) => !s.ok).map((s) => s.source.replace("_", " "));
       setNotice(
         `${res.added} new ${res.added === 1 ? "item" : "items"} fetched` +
           (questions ? `, ${questions} new audience question${questions === 1 ? "" : "s"}` : "") + "." +
           (failed.length ? ` Couldn't read: ${[...new Set(failed)].join(", ")}. See the Accounts tab.` : "") +
+          (trendErr.length ? ` Trend sources unavailable: ${trendErr.join(", ")}.` : "") +
           (res.quota?.warning ? ` ${res.quota.warning}` : "")
       );
     } catch (e) {
@@ -142,7 +148,6 @@ export default function App() {
     speed: results?.speed?.length,
   };
   const org = orgs.find((o) => o.id === orgId);
-  const ytDefinitions = options?.platforms?.supported.find((p) => p.id === "youtube")?.metrics;
 
   return (
     <div className="app">
@@ -195,7 +200,7 @@ export default function App() {
         </section>
       ) : (
         <>
-          <OverviewCards data={results?.overview} perf={results?.performance} config={config} />
+          {tab !== "dashboard" && <OverviewCards data={results?.overview} perf={results?.performance} config={config} />}
 
           <nav className="tabs" role="tablist">
             {visibleTabs.map((t) => (
@@ -212,19 +217,21 @@ export default function App() {
             ))}
           </nav>
 
+          {tab === "dashboard" && <Dashboard orgId={orgId} refreshKey={refreshKey} onNavigate={setTab} />}
+          {tab === "trends" && <Trends orgId={orgId} refreshKey={refreshKey} />}
           {tab === "suggestions" && (
             <Suggestions orgId={orgId} items={results?.recommendations} readiness={results?.readiness} config={config}
               onNavigate={setTab} onTracked={() => setRefreshKey((k) => k + 1)} />
           )}
           {tab === "opportunities" && <Opportunities orgId={orgId} onNavigate={setTab} refreshKey={refreshKey} />}
-          {tab === "performance" && <Performance orgId={orgId} perf={results?.performance} definitions={ytDefinitions} refreshKey={refreshKey} />}
+          {tab === "performance" && <Performance orgId={orgId} perf={results?.performance} platforms={options?.platforms} refreshKey={refreshKey} />}
           {tab === "gaps" && (
             <Gaps orgId={orgId} gaps={results?.gaps || []} windowHours={results?.organization?.window_hours} config={config}
               recKeys={recKeys} onNavigate={setTab} refreshKey={refreshKey} />
           )}
           {tab === "explorer" && <Explorer orgId={orgId} refreshKey={refreshKey} />}
           {tab === "speed" && <Speed rows={results?.speed || []} />}
-          {tab === "accounts" && <Accounts orgId={orgId} platforms={options?.platforms} onChanged={loadResults} />}
+          {tab === "accounts" && <Accounts orgId={orgId} platforms={options?.platforms} integrations={options?.integrations} onChanged={loadResults} />}
           {tab === "workspace" && (
             <Workspace
               orgId={orgId} org={org} config={config} options={options} onNavigate={setTab}

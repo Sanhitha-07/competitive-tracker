@@ -97,8 +97,12 @@ def test_options_describe_platform_metrics(client):
     yt = next(p for p in o["platforms"]["supported"] if p["id"] == "youtube")
     rss = next(p for p in o["platforms"]["supported"] if p["id"] == "rss")
     assert "relative_performance" in yt["metrics"] and "views" not in rss["metrics"]
-    assert any(p["id"] == "instagram" for p in o["platforms"]["planned"])
-    assert len(o["industries"]) >= 12
+    ig = next(p for p in o["platforms"]["supported"] if p["id"] == "instagram")
+    assert ig["performance_metric"] == "interactions" and "engagement_per_follower" in ig["metrics"]
+    assert any(p["id"] == "facebook" for p in o["platforms"]["supported"])
+    assert any(p["id"] == "tiktok" for p in o["platforms"]["planned"])
+    assert len(o["industries"]) >= 20 and {"small_business", "news_channel"} <= {c["id"] for c in o["creator_types"]}
+    assert o["integrations"]["ai"] is False
 
 
 def test_unsupported_platform_rejected(client):

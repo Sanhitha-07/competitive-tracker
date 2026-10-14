@@ -296,3 +296,25 @@ def comment_questions(video_id, max_results=50):
 def video_id(link):
     m = re.search(r"[?&]v=([\w-]{6,})", link)
     return m.group(1) if m else None
+
+
+def trending_videos(region="IN", category=None, max_results=25):
+    """YouTube's "Trending" chart for a country, optionally one video category (1 unit)."""
+    params = {"part": "snippet,statistics", "chart": "mostPopular", "regionCode": region, "maxResults": max_results}
+    if category:
+        params["videoCategoryId"] = category
+    data = _get("videos", **params)
+    out = []
+    for v in data.get("items", []):
+        sn, st = v["snippet"], v.get("statistics", {})
+        thumbs = sn.get("thumbnails", {})
+        out.append({
+            "title": sn["title"].strip(),
+            "link": f"https://www.youtube.com/watch?v={v['id']}",
+            "channel": sn.get("channelTitle"),
+            "published_at": datetime.fromisoformat(sn["publishedAt"].replace("Z", "+00:00")),
+            "tags": [t for t in sn.get("tags", [])[:15]],
+            "views": int(st.get("viewCount", 0)),
+            "thumbnail": (thumbs.get("medium") or thumbs.get("default") or {}).get("url"),
+        })
+    return out

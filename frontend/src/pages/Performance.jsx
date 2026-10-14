@@ -1,5 +1,142 @@
 import { useEffect, useState } from "react";
-import { compact, duration, fmtDate, fmtTime, FORMAT_LABEL, getHistory, PLATFORM_LABEL, toIST, tzLabel } from "../api";
+import { AUDIENCE_WORD, compact, duration, fmtDate, fmtTime, FORMAT_LABEL, getHistory, METRIC_WORD, PLATFORM_LABEL, toIST, tzLabel } from "../api";
+
+const SOCIAL_METRICS = [
+  { key: "per_week", def: "per_week", label: "Posts / week", fmt: (v) => v, higherIsBetter: true },
+  { key: "median_interactions", def: "median_interactions", label: "Typical interactions", fmt: compact, higherIsBetter: true },
+  { key: "engagement_rate", def: "engagement_per_follower", label: "Engagement / follower", fmt: (v) => (v == null ? "–" : `${v}%`), higherIsBetter: true },
+  { key: "video_pct", def: null, label: "Video share", fmt: (v) => (v == null ? "–" : `${Math.round(v)}%`) },
+];
+
+function SocialBlock({ platform, block, definitions, days }) {
+  const { us, market } = block;
+  const label = PLATFORM_LABEL[platform];
+  const video = platform === "instagram" ? "Reels" : "Videos";
+  const fmts = [...new Set(block.accounts.flatMap((a) => Object.keys(a.stats?.formats || {})))];
+  return (
+    <>
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2>You vs competitors on {label}</h2>
+            <p className="muted">
+              Posts from the last {days} days. {label} doesn't make competitors' views or reach public, so posts are compared by
+              interactions (likes{platform === "facebook" ? "/reactions, comments and shares" : " and comments"}) and engagement per follower.
+              "Competitors" = the average of {market?.accounts ?? 0} account{market?.accounts === 1 ? "" : "s"}, each counted once.
+            </p>
+          </div>
+        </div>
+        {us && market ? (
+          <div className="compare">
+            {SOCIAL_METRICS.map((m) => (
+              <div className="compare-card" key={m.key}>
+                <span className="card-label">{m.key === "video_pct" ? `${video} share` : m.label}</span>
+                <div className="compare-row">
+                  <div><small>You ({us.posts})</small><b>{m.fmt(us[m.key])}</b></div>
+                  <div><small>Competitors ({market.total_posts})</small><b>{m.fmt(market[m.key])}</b></div>
+                </div>
+                {us[m.key] != null && market[m.key] != null && <Diff us={us[m.key]} market={market[m.key]} higherIsBetter={m.higherIsBetter} />}
+                {m.def && definitions?.[m.def] && <small className="muted def">{definitions[m.def]}</small>}
+                {m.key === "video_pct" && <small className="muted def">Share of posts that are {video.toLowerCase()}.</small>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="notice">{us ? "No competitor posted in this period." : `Your ${label} account has no posts in this period, or isn't marked as Ours.`}</p>
+        )}
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th><th>Followers</th><th>Posts</th><th>Per week</th><th>Typical interactions</th><th>Avg likes</th><th>Avg comments</th>
+                {platform === "facebook" && <th>Avg shares</th>}
+                <th>Engagement / follower</th><th>{video}</th>{platform === "instagram" && <th>Typical Reel views</th>}<th>Best slot ({tzLabel()})</th>
+              </tr>
+            </thead>
+            <tbody>
+              {block.accounts.map((a) => (
+                <tr key={a.id} className={a.is_us ? "us-row" : ""}>
+                  <td className="nowrap"><b>{a.name}</b></td>
+                  <td className="num">{compact(a.subscribers)}</td>
+                  {a.stats ? (
+                    <>
+                      <td className="num">{a.stats.posts}</td>
+                      <td className="num">{a.stats.per_week}</td>
+                      <td className="num">{compact(a.stats.median_interactions)}</td>
+                      <td className="num">{a.stats.avg_likes == null ? <span className="muted small" title="This account hides like counts">hidden</span> : compact(a.stats.avg_likes)}</td>
+                      <td className="num">{compact(a.stats.avg_comments)}</td>
+                      {platform === "facebook" && <td className="num">{compact(a.stats.avg_shares)}</td>}
+                      <td className="num">{a.stats.engagement_rate == null ? "–" : `${a.stats.engagement_rate}%`}</td>
+                      <td className="num">{a.stats.video_pct}%</td>
+                      {platform === "instagram" && <td className="num">{compact(a.stats.median_reel_views)}</td>}
+                      <td className="nowrap small">{a.stats.best_time ? `${a.stats.best_time} (${a.stats.best_time_sample})` : "–"}</td>
+                    </>
+                  ) : (
+                    <td colSpan={platform === "facebook" ? 9 : 9} className="muted small">No posts in the last {days} days</td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {block.suggestions.length > 0 && (
+          <div className="sugg-group">
+            <h3>Findings</h3>
+            {block.suggestions.map((sg) => (
+              <div className={`sugg ${sg.tone}`} key={sg.title}><b>{sg.title}</b><p>{sg.detail}</p></div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {fmts.length > 0 && (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>By content format ({label})</h2>
+              <p className="muted">Number of posts, typical interactions and engagement per follower per format, last {days} days.</p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Account</th>{fmts.map((f) => <th key={f}>{FORMAT_LABEL[f] || f}</th>)}</tr></thead>
+              <tbody>
+                {block.accounts.filter((a) => a.stats).map((a) => (
+                  <tr key={a.id} className={a.is_us ? "us-row" : ""}>
+                    <td className="nowrap"><b>{a.name}</b></td>
+                    {fmts.map((f) => {
+                      const x = a.stats.formats?.[f];
+                      return <td key={f} className="num">{x ? <>{compact(x.median_interactions)} <span className="muted small">· {x.posts} post{x.posts !== 1 ? "s" : ""}{x.engagement_per_follower != null ? ` · ${x.engagement_per_follower}%` : ""}</span></> : <span className="muted">–</span>}</td>;
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {block.top_posts?.length > 0 && (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2>Competitors' top {label} posts</h2>
+              <p className="muted">Most interactions in the last {days} days. Learn from the topic, hook and format. Don't copy.</p>
+            </div>
+          </div>
+          <ol className="top-list">
+            {block.top_posts.map((v) => (
+              <li key={v.link}>
+                <a href={v.link} target="_blank" rel="noreferrer">{v.title}</a>
+                <span className="muted small">{v.account} · {FORMAT_LABEL[v.format] || v.format} · {compact(v.interactions)} interactions{v.views != null ? ` · ${compact(v.views)} views` : ""} · {toIST(v.published_at)}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+    </>
+  );
+}
 
 const METRICS = [
   { key: "per_week", def: "per_week", label: "Videos / week", fmt: (v) => v, higherIsBetter: true },
@@ -101,17 +238,17 @@ function History({ orgId, refreshKey }) {
         </div>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Account</th><th>Audience change</th><th>Baseline (usual views)</th></tr></thead>
+            <thead><tr><th>Account</th><th>Audience change</th><th>Baseline (usual result)</th></tr></thead>
             <tbody>
               {h.accounts.map((a) => (
                 <tr key={a.id} className={a.is_us ? "us-row" : ""}>
                   <td className="nowrap"><b>{a.name}</b> <span className={`plat ${a.platform}`}>{PLATFORM_LABEL[a.platform] || a.platform}</span></td>
                   <td className="small">
                     {a.audience_growth
-                      ? <>{a.audience_growth.change >= 0 ? "+" : ""}{a.audience_growth.change.toLocaleString("en-IN")} ({compact(a.audience_growth.from)} → {compact(a.audience_growth.to)}) since {fmtDate(a.audience_growth.since)}</>
+                      ? <>{a.audience_growth.change >= 0 ? "+" : ""}{a.audience_growth.change.toLocaleString("en-IN")} {AUDIENCE_WORD[a.platform] || ""} ({compact(a.audience_growth.from)} → {compact(a.audience_growth.to)}) since {fmtDate(a.audience_growth.since)}</>
                       : <span className="muted">Needs 2+ refreshes</span>}
                   </td>
-                  <td className="small">{a.baseline ? `${compact(a.baseline.median_views)} (median of ${a.baseline.posts} posts)` : <span className="muted">Not enough posts with views</span>}</td>
+                  <td className="small">{a.baseline ? `${compact(a.baseline.median_views)} ${METRIC_WORD[a.platform] || "views"} (median of ${a.baseline.posts} posts)` : <span className="muted">Not enough posts with public numbers</span>}</td>
                 </tr>
               ))}
             </tbody>
@@ -120,7 +257,7 @@ function History({ orgId, refreshKey }) {
         {withViews.length > 0 && weeks.length > 1 && (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Weekly median views</th>{weeks.map((w) => <th key={w} className="nowrap">wk of {fmtDate(w)}</th>)}</tr></thead>
+              <thead><tr><th>Weekly median (views / interactions)</th>{weeks.map((w) => <th key={w} className="nowrap">wk of {fmtDate(w)}</th>)}</tr></thead>
               <tbody>
                 {withViews.map((a) => (
                   <tr key={a.id} className={a.is_us ? "us-row" : ""}>
@@ -143,18 +280,19 @@ function History({ orgId, refreshKey }) {
           <div className="panel-head">
             <div>
               <h2>Your recent posts vs your usual</h2>
-              <p className="muted">Each post's views ÷ your median views (posts 48h+ old, last 90 days). Posts under 48 hours old aren't compared yet.</p>
+              <p className="muted">Each post's views (YouTube) or interactions (Instagram, Facebook) ÷ your usual on that platform (median of posts 48h+ old, last 90 days). Posts under 48 hours old aren't compared yet.</p>
             </div>
           </div>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Post</th><th>Published</th><th>Views</th><th>vs your usual</th></tr></thead>
+              <thead><tr><th>Post</th><th>Platform</th><th>Published</th><th>Result</th><th>vs your usual</th></tr></thead>
               <tbody>
                 {h.our_recent_vs_baseline.map((p) => (
                   <tr key={p.id}>
                     <td className="story"><a href={p.link} target="_blank" rel="noreferrer">{p.title}</a></td>
+                    <td><span className={`plat ${p.platform}`}>{PLATFORM_LABEL[p.platform]}</span></td>
                     <td className="nowrap small">{fmtTime(p.published_at)}</td>
-                    <td className="num">{compact(p.views)}</td>
+                    <td className="num">{compact(p.metric_value)} <span className="muted small">{METRIC_WORD[p.platform]}</span></td>
                     <td className="num">{p.relative != null ? <span className={p.relative >= 1.2 ? "good-text" : p.relative < 0.8 ? "bad-text" : ""}>{p.relative}×</span> : <span className="muted">–</span>}</td>
                   </tr>
                 ))}
@@ -167,9 +305,12 @@ function History({ orgId, refreshKey }) {
   );
 }
 
-export default function Performance({ orgId, perf, definitions, refreshKey }) {
+export default function Performance({ orgId, perf, platforms, refreshKey }) {
+  const blocks = Object.keys(perf?.platforms || {});
+  const tabs = [...blocks, ...Object.keys(perf?.other_platforms || {}).filter((p) => !blocks.includes(p))];
+  const [picked, setPicked] = useState(null);
   const hasYouTube = perf && perf.accounts.length > 0;
-  if (!perf || (!hasYouTube && !Object.keys(perf.other_platforms || {}).length)) {
+  if (!perf || !tabs.length) {
     return (
       <section className="panel">
         <div className="empty">
@@ -180,10 +321,26 @@ export default function Performance({ orgId, perf, definitions, refreshKey }) {
     );
   }
   const { us, market } = perf;
+  const active = tabs.includes(picked) ? picked : tabs[0];
+  const defsOf = (id) => platforms?.supported.find((p) => p.id === id)?.metrics;
+  const definitions = defsOf("youtube");
 
   return (
     <>
-      {hasYouTube && (
+      {tabs.length > 1 && (
+        <div className="chips platform-tabs" role="tablist" aria-label="Platform">
+          {tabs.map((t) => (
+            <button key={t} role="tab" aria-selected={active === t} className={`chip ${active === t ? "on" : ""}`} onClick={() => setPicked(t)}>
+              {PLATFORM_LABEL[t] || t}
+            </button>
+          ))}
+        </div>
+      )}
+      {active !== "youtube" && perf.platforms?.[active] && (
+        <SocialBlock platform={active} block={perf.platforms[active]} definitions={defsOf(active)} days={perf.days} />
+      )}
+      {active !== "youtube" && !perf.platforms?.[active] && <OtherPlatforms other={{ [active]: perf.other_platforms[active] }} />}
+      {active === "youtube" && hasYouTube && (
         <section className="panel">
           <div className="panel-head">
             <div>
@@ -264,11 +421,9 @@ export default function Performance({ orgId, perf, definitions, refreshKey }) {
         </section>
       )}
 
-      {hasYouTube && <FormatTable accounts={perf.accounts} />}
-      <OtherPlatforms other={perf.other_platforms} />
-      <History orgId={orgId} refreshKey={refreshKey} />
+      {active === "youtube" && hasYouTube && <FormatTable accounts={perf.accounts} />}
 
-      {perf.top_competitor_videos.length > 0 && (
+      {active === "youtube" && perf.top_competitor_videos.length > 0 && (
         <section className="panel">
           <div className="panel-head">
             <div>
@@ -286,6 +441,7 @@ export default function Performance({ orgId, perf, definitions, refreshKey }) {
           </ol>
         </section>
       )}
+      <History orgId={orgId} refreshKey={refreshKey} />
     </>
   );
 }

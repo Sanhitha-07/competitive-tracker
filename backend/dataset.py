@@ -1,16 +1,18 @@
 """Everything one analysis needs, computed once per request: the workspace configuration,
 the comparison period, each account's baseline and each post's relative performance.
 
-Baseline = the median views of an account's posts that are at least 48 hours old,
-from the last 90 days. A post's relative performance = its views ÷ its own account's baseline,
-so a small creator and a large brand can be compared fairly.
+Baseline = the median of an account's performance metric (views on YouTube, interactions on
+Instagram/Facebook, see connectors.performance_metric) over its posts that are at least 48 hours
+old, from the last 90 days. A post's relative performance = its metric ÷ its own account's
+baseline, so a small creator and a large brand, or a YouTube video and an Instagram post,
+can be compared fairly.
 """
 from datetime import datetime, timedelta, timezone
 from statistics import median
 
 import topics as topic_map
 import workspace
-from connectors import YouTubeConnector
+from connectors import YouTubeConnector, interactions, metric_value, performance_metric
 
 BASELINE_DAYS = 90
 BASELINE_MIN_AGE = timedelta(hours=48)
@@ -52,18 +54,21 @@ class Dataset:
         per_account = {}
         for p in self.posts:
             age = self.now - utc(p.published_at)
-            if p.views is not None and age >= BASELINE_MIN_AGE and utc(p.published_at) >= start:
+            if metric_value(p) is not None and age >= BASELINE_MIN_AGE and utc(p.published_at) >= start:
                 per_account.setdefault(p.competitor_id, []).append(p)
         self.baseline = {}
         for aid, ps in per_account.items():
             if len(ps) >= BASELINE_MIN_POSTS:
-                self.baseline[aid] = {"median_views": median(p.views for p in ps), "posts": len(ps), "days": BASELINE_DAYS}
+                metric = performance_metric(self.by_id[aid].platform)
+                # "median_views" is the median of the platform's metric (kept under its old name).
+                self.baseline[aid] = {"median_views": median(metric_value(p) for p in ps), "posts": len(ps),
+                                      "days": BASELINE_DAYS, "metric": metric}
         self.relative = {}
         for aid, ps in per_account.items():
             b = self.baseline.get(aid)
             if b and b["median_views"]:
                 for p in ps:
-                    self.relative[p.id] = round(p.views / b["median_views"], 2)
+                    self.relative[p.id] = round(metric_value(p) / b["median_views"], 2)
 
     # ---- helpers used by recommendations, explorer and opportunities ----
 
@@ -105,6 +110,8 @@ class Dataset:
             "account": a.name, "account_id": a.id, "is_us": a.is_us, "platform": p.platform,
             "format": self.format(p), "thumbnail": getattr(p, "thumbnail", None),
             "published_at": iso(p.published_at), "views": p.views, "likes": p.likes, "comments": p.comments,
+            "shares": getattr(p, "shares", None), "interactions": interactions(p),
+            "metric": performance_metric(p.platform), "metric_value": metric_value(p),
             "duration_seconds": p.duration_seconds, "relative": self.relative.get(p.id),
             "baseline_views": round(b["median_views"]) if b else None, "baseline_posts": b["posts"] if b else 0,
             "metrics_updated_at": iso(getattr(p, "metrics_updated_at", None)),

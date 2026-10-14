@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { compact, duration, fmtTime, FORMAT_LABEL, getContent, PLATFORM_LABEL } from "../api";
+import { compact, duration, fmtTime, FORMAT_LABEL, getContent, METRIC_WORD, PLATFORM_LABEL } from "../api";
 import Popup from "../components/Popup";
 
 const PAGE = 24;
@@ -31,13 +31,16 @@ function Card({ p, selected, onToggle, disabled }) {
           {p.format && <span className="plat fmt">{FORMAT_LABEL[p.format] || p.format}</span>}
           {p.relative != null && (
             <span className={`plat rel ${p.relative >= 2 ? "hot" : p.relative >= 1.2 ? "up" : p.relative < 0.8 ? "down" : ""}`}
-              title={`Views ÷ ${p.account}'s usual ${p.baseline_views?.toLocaleString("en-IN")} (median of ${p.baseline_posts} posts)`}>
+              title={`${METRIC_WORD[p.platform] || "views"} ÷ ${p.account}'s usual ${p.baseline_views?.toLocaleString("en-IN")} (median of ${p.baseline_posts} posts)`}>
               {p.relative}× usual
             </span>
           )}
         </div>
-        {p.views != null && (
-          <span className="small">{compact(p.views)} views · {compact(p.likes)} likes · {compact(p.comments)} comments</span>
+        {(p.views != null || p.interactions != null) && (
+          <span className="small">
+            {[p.views != null && `${compact(p.views)} views`, p.likes != null && `${compact(p.likes)} ${p.platform === "facebook" ? "reactions" : "likes"}`,
+              p.comments != null && `${compact(p.comments)} comments`, p.shares != null && `${compact(p.shares)} shares`].filter(Boolean).join(" · ")}
+          </span>
         )}
         {p.topics?.length > 0 && <div className="chips">{p.topics.slice(0, 4).map((t) => <span key={t} className="chip static tiny">{t}</span>)}</div>}
         <label className="check small compare-check">
@@ -55,12 +58,14 @@ function Compare({ items, onClose }) {
     ["Platform", (p) => PLATFORM_LABEL[p.platform] || p.platform],
     ["Format", (p) => FORMAT_LABEL[p.format] || p.format || "–"],
     ["Length", (p) => duration(p.duration_seconds)],
-    ["Views", (p) => (p.views != null ? p.views.toLocaleString("en-IN") : "not available")],
+    ["Views", (p) => (p.views != null ? p.views.toLocaleString("en-IN") : "not public")],
+    ["Shares", (p) => (p.shares != null ? p.shares.toLocaleString("en-IN") : "n.a.")],
     ["Likes", (p) => (p.likes != null ? p.likes.toLocaleString("en-IN") : "hidden / n.a.")],
     ["Comments", (p) => (p.comments != null ? p.comments.toLocaleString("en-IN") : "n.a.")],
-    ["Engagement rate", (p) => (engagement(p) ? `${engagement(p)}%` : "–")],
+    ["Engagement per view", (p) => (engagement(p) ? `${engagement(p)}%` : "–")],
+    ["Interactions", (p) => (p.interactions != null ? p.interactions.toLocaleString("en-IN") : "–")],
     ["vs account's usual", (p) => (p.relative != null ? `${p.relative}×` : "–")],
-    ["Account's usual views", (p) => (p.baseline_views != null ? `${p.baseline_views.toLocaleString("en-IN")} (${p.baseline_posts} posts)` : "–")],
+    ["Account's usual", (p) => (p.baseline_views != null ? `${p.baseline_views.toLocaleString("en-IN")} ${METRIC_WORD[p.platform] || "views"} (${p.baseline_posts} posts)` : "–")],
     ["Topics", (p) => (p.topics || []).join(", ") || "–"],
     ["Metrics as of", (p) => fmtTime(p.metrics_updated_at)],
   ];
@@ -87,8 +92,8 @@ function Compare({ items, onClose }) {
         </table>
       </div>
       <p className="muted small">
-        Engagement rate = (likes + comments) ÷ views. "vs account's usual" compares each post with its own account, so accounts of different sizes can be compared.
-        Views keep growing after publishing, so newer posts are at a disadvantage.
+        Engagement per view = (likes + comments) ÷ views. "vs account's usual" compares each post with its own account (views on YouTube,
+        interactions on Instagram and Facebook), so accounts of different sizes and platforms can be compared. Numbers keep growing after publishing, so newer posts are at a disadvantage.
       </p>
     </Popup>
   );
@@ -191,7 +196,7 @@ export default function Explorer({ orgId, refreshKey }) {
         <label className="date-f">To <input type="date" value={filters.until} onChange={set("until")} /></label>
         <select value={filters.sort} onChange={set("sort")} aria-label="Sort">
           <option value="newest">Newest</option>
-          <option value="views">Most views</option>
+          <option value="views">Most views / interactions</option>
           <option value="relative">Most above usual</option>
         </select>
         <label className="check small" title={f?.my_topics?.length ? f.my_topics.join(", ") : "Add topics in Workspace settings"}>
