@@ -47,6 +47,8 @@ class Organization(SQLModel, table=True):
     sub_niche: Optional[str] = None
     # User corrections to the topic map: {"aliases": {term: label}, "excluded": [term, ...]}
     topic_rules: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    region: Optional[str] = None  # 2-letter country code for internet trends, e.g. "IN"
+    brand_safety: Optional[str] = None  # "strict" | "standard" | "newsroom"; default from creator type
 
 
 class Competitor(SQLModel, table=True):
@@ -97,6 +99,7 @@ class MetricSnapshot(SQLModel, table=True):
     views: Optional[int] = None
     likes: Optional[int] = None
     comments: Optional[int] = None
+    shares: Optional[int] = None
 
 
 class AccountSnapshot(SQLModel, table=True):
@@ -232,3 +235,24 @@ class OAuthState(SQLModel, table=True):
     platform: str
     code_verifier: Optional[str] = None
     created_at: datetime = Field(default_factory=_now)
+
+
+class TrendItem(SQLModel, table=True):
+    """Something trending on the internet (Google Trends, news, YouTube trending) that matched a workspace."""
+    __table_args__ = (UniqueConstraint("org_id", "key"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    org_id: int = Field(foreign_key="organization.id", index=True)
+    key: str  # source + normalized title, so the same trend isn't saved twice
+    source: str  # "google_trends" | "google_news" | "youtube_trending"
+    title: str
+    link: Optional[str] = None
+    summary: Optional[str] = None
+    traffic: Optional[str] = None       # e.g. "10000+" searches (Google Trends only)
+    volume: Optional[int] = None        # articles/videos found for a topic search
+    momentum: Optional[float] = None    # recent volume ÷ earlier volume (topic searches)
+    query: Optional[str] = None         # the workspace topic that was searched, if any
+    picture: Optional[str] = None
+    published_at: Optional[datetime] = None
+    fetched_at: datetime = Field(default_factory=_now, index=True)
+    related: list = Field(default_factory=list, sa_column=Column(JSON))  # [{title, link, source, published_at}]

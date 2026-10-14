@@ -190,7 +190,7 @@ def coverage_map(posts, accounts, tracked=(), relative=None, questions=None, rul
             topics.append(build(term, ids))
 
     # Prefer the phrase over its single words when the phrase explains most of the word's posts.
-    phrases = [t for t in topics if " " in t["topic"] and not t["tracked"]]
+    phrases = [t for t in topics if " " in t["topic"]]
     drop = set()
     for t in topics:
         if " " in t["topic"] or t["tracked"] or t["renamed"]:

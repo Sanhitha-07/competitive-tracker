@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchNews, getOptions, getOrganizations, getResults, setDisplayTimeZone } from "./api";
 import ErrorBoundary from "./components/ErrorBoundary";
 import OrgBar from "./components/OrgBar";
+import Overview from "./pages/Dashboard";
+import Trends from "./pages/Trends";
 import Gaps from "./pages/Gaps";
 import Speed from "./pages/Speed";
 import Performance from "./pages/Performance";
@@ -12,6 +14,8 @@ import Accounts from "./pages/Accounts";
 import Workspace from "./pages/Workspace";
 
 const TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "trends", label: "Trends" },
   { id: "suggestions", label: "Suggestions" },
   { id: "opportunities", label: "Opportunities" },
   { id: "performance", label: "Performance" },
@@ -37,7 +41,7 @@ export default function App() {
   // A link ending in #performance (or another tab id) opens that tab.
   const [tab, setTab] = useState(() => {
     const fromLink = window.location.hash.slice(1);
-    return TABS.some((t) => t.id === fromLink) ? fromLink : "suggestions";
+    return TABS.some((t) => t.id === fromLink) ? fromLink : "overview";
   });
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -254,6 +258,8 @@ export default function App() {
           </nav>
 
           <ErrorBoundary key={`${tab}-${orgId}-${refreshKey}`}>
+          {tab === "overview" && <Overview orgId={orgId} refreshKey={refreshKey} onNavigate={setTab} />}
+          {tab === "trends" && <Trends orgId={orgId} refreshKey={refreshKey} />}
           {tab === "suggestions" && (
             <Suggestions orgId={orgId} items={results?.recommendations} readiness={results?.readiness} config={config}
               onNavigate={setTab} refreshKey={refreshKey} />

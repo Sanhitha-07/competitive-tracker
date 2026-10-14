@@ -137,10 +137,10 @@ def profile(ds, account, days=DNA_DAYS):
         p = patterns[0]
         line = f'{p["share"]}% of titles: {p["label"].lower()}'
         if p["median_relative"] is not None and p["others_median_relative"] is not None:
-            line += f' (those got {p["median_relative"]}× its usual views vs {p["others_median_relative"]}× for other titles)'
+            line += f' (those got {p["median_relative"]}× its usual vs {p["others_median_relative"]}× for other titles)'
         summary.append(line + ".")
     if standouts:
-        summary.append(f'{len(standouts)} post{"s" if len(standouts) != 1 else ""} got {STANDOUT:g}× or more of its usual views; '
+        summary.append(f'{len(standouts)} post{"s" if len(standouts) != 1 else ""} got {STANDOUT:g}× or more of its usual; '
                        f'top: "{standouts[0].title}" ({ds.relative[standouts[0].id]}×).')
     if shift and shift["new"]:
         summary.append("Newer topics recently: " + ", ".join(f'"{t["topic"]}"' for t in shift["new"][:3]) + ".")

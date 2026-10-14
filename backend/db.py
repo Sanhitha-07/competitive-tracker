@@ -18,11 +18,13 @@ NEW_COLUMNS = {
         "creator_type": "VARCHAR", "niche": "VARCHAR", "audience": "VARCHAR",
         "goals": "JSON", "topics": "JSON", "formats": "JSON", "platforms": "JSON",
         "timezone": "VARCHAR", "time_sensitive": "BOOLEAN", "sub_niche": "VARCHAR", "topic_rules": "JSON",
+        "region": "VARCHAR", "brand_safety": "VARCHAR",
     },
     "post": {
         "thumbnail": "VARCHAR", "format": "VARCHAR", "tags": "JSON",
         "metrics_updated_at": "DATETIME", "questions_checked_at": "DATETIME", "shares": "INTEGER",
     },
+    "metricsnapshot": {"shares": "INTEGER"},
 }
 
 

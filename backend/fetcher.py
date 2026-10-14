@@ -57,7 +57,7 @@ def _save(session: Session, competitor: Competitor, items, now):
         last = last_snap.get(post.id)
         if last is None or now - _utc(last) >= SNAPSHOT_EVERY:
             session.add(MetricSnapshot(post_id=post.id, captured_at=now, views=post.views,
-                                       likes=post.likes, comments=post.comments))
+                                       likes=post.likes, comments=post.comments, shares=post.shares))
             snapshots += 1
     session.add(AccountSnapshot(competitor_id=competitor.id, captured_at=now,
                                 subscribers=competitor.subscribers, posts_tracked=len(existing) + added))

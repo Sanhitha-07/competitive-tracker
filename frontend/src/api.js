@@ -86,6 +86,14 @@ export const getTopics = (orgId, filters = {}) => request(`/organizations/${orgI
 export const getContent = (orgId, filters) => request(`/organizations/${orgId}/content${qs(filters)}`);
 export const getDashboard = (orgId, filters = {}) => request(`/organizations/${orgId}/dashboard${qs(filters)}`);
 export const getHistory = (orgId, days = 90) => request(`/organizations/${orgId}/history?days=${days}`);
+
+// Overview: plain-language briefing + chart data, and the optional AI briefing
+export const getBriefing = (orgId) => request(`/organizations/${orgId}/briefing`);
+export const getAiBriefing = (orgId) => request(`/organizations/${orgId}/briefing/ai`, { method: "POST" });
+
+// Internet trends matched to the workspace
+export const getTrends = (orgId) => request(`/organizations/${orgId}/trends`);
+export const refreshTrends = (orgId) => request(`/organizations/${orgId}/trends/refresh`, { method: "POST" });
 export const getPostHistory = (orgId, postId) => request(`/organizations/${orgId}/posts/${postId}/history`);
 
 // Saved collections of public posts (Content Explorer)
@@ -171,9 +179,17 @@ export function period(hours) {
 }
 
 export const PLATFORM_LABEL = { rss: "Website", youtube: "YouTube", instagram: "Instagram", facebook: "Facebook", x: "X" };
+// What a post's performance is measured with (competitors' views aren't public on Instagram/Facebook/X).
+export const METRIC_WORD = { youtube: "views", instagram: "interactions", facebook: "interactions", x: "interactions" };
+export const AUDIENCE_WORD = { youtube: "subscribers", instagram: "followers", facebook: "followers", x: "followers" };
 export const FORMAT_LABEL = {
   short: "Short", video: "Video", long: "Long-form", live: "Live stream", article: "Article",
   image: "Image", podcast: "Podcast", newsletter: "Newsletter", reel: "Reel", carousel: "Carousel", post: "Post",
+  other: "Other",
+};
+export const TAB_LABEL = {
+  overview: "Overview", trends: "Trends", suggestions: "Suggestions", performance: "Performance",
+  gaps: "Coverage Gaps", explorer: "Content Explorer", accounts: "Accounts",
 };
 export const STATUS_LABEL = {
   saved: "Saved", brief: "Brief ready", in_mediaops: "In MediaOps", scheduled: "Scheduled",

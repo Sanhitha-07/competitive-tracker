@@ -414,3 +414,35 @@ def describe():
         ],
         "planned": [{"id": k, "label": PLANNED_LABELS[k], "reason": v} for k, v in PLANNED.items()],
     }
+
+
+# ---- How a post's performance is measured on each platform ----
+# YouTube: views. Instagram, Facebook and X: interactions (likes + comments + shares), because
+# competitors' views/reach aren't public there (Instagram shows views for Reels only, and X
+# impressions depend on the API access level), and one account must always use one measure.
+PERFORMANCE_METRIC = {"youtube": "views", "instagram": "interactions", "facebook": "interactions", "x": "interactions"}
+AUDIENCE_LABEL = {"youtube": "subscribers", "instagram": "followers", "facebook": "followers", "x": "followers"}
+
+
+def performance_metric(platform):
+    return PERFORMANCE_METRIC.get(platform)
+
+
+def audience_label(platform):
+    return AUDIENCE_LABEL.get(platform)
+
+
+def interactions(post):
+    """Likes + comments + shares that the platform exposes; None if it exposes none of them."""
+    known = [x for x in (getattr(post, f, None) for f in ("likes", "comments", "shares")) if x is not None]
+    return sum(known) if known else None
+
+
+def metric_value(post):
+    """The number a post's performance is measured with on its platform (see PERFORMANCE_METRIC)."""
+    m = performance_metric(getattr(post, "platform", None) or "youtube")
+    if m == "views":
+        return post.views
+    if m == "interactions":
+        return interactions(post)
+    return None
