@@ -267,3 +267,17 @@ def test_workspace_rename_and_sub_niche(client, org):
     assert r.json()["config"]["sub_niche"] == "kettlebells for beginners"
     client.post("/organizations", json={"name": "Taken Name"})
     assert client.put(url, json={"name": "Taken Name"}).status_code == 400
+
+
+def test_dashboard_platform_filter(client, org):
+    url = f"/organizations/{org['id']}/dashboard"
+    yt = {m["key"] for m in client.get(url, params={"platform": "youtube"}).json()["summary"]}
+    assert {"per_week_youtube", "typical_views", "engagement"} <= yt and "per_week_rss" not in yt
+    web = client.get(url, params={"platform": "rss"}).json()
+    keys = {m["key"] for m in web["summary"]}
+    assert "per_week_rss" in keys and "typical_views" not in keys and "engagement" not in keys
+    assert not web["youtube"]["items"] and web["website"]["items"]
+    ig = client.get(url, params={"platform": "instagram"}).json()  # no Instagram accounts here
+    assert ig["summary"][0]["ours"] == 0 and "typical_views" not in {m["key"] for m in ig["summary"]}
+    assert client.get(url, params={"platform": "myspace"}).status_code == 400
+    assert client.get(f"/organizations/{org['id']}/content", params={"platform": "myspace"}).status_code == 400

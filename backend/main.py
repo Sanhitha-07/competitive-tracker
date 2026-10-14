@@ -453,6 +453,11 @@ ACCOUNT_NOUNS = {"youtube": "YouTube channel", "rss": "RSS feed", "instagram": "
                  "facebook": "Facebook Page", "x": "X account"}
 
 
+def _check_platform(platform):
+    if platform and platform not in connectors.CONNECTORS:
+        raise HTTPException(400, f"Unknown platform. Use one of: {', '.join(connectors.CONNECTORS)}.")
+
+
 def _label(platform):
     return ACCOUNT_NOUNS.get(platform, "account")
 
@@ -605,6 +610,7 @@ def get_dashboard(org_id: int, days: int = Query(default=90, ge=7, le=365), comp
                   platform: Optional[str] = Query(default=None, max_length=20),
                   topic: Optional[str] = Query(default=None, max_length=60), session: Session = Depends(get_session)):
     """Performance overview for the chosen period and filters: everything comes from the same posts."""
+    _check_platform(platform)
     ds = _dataset(session, org_id, days=days, competitor_id=competitor_id)
     full = _dataset(session, org_id)
     perf = compare(full.accounts, full.posts, tz=full.tz)
@@ -661,6 +667,7 @@ def content(
     session: Session = Depends(get_session),
 ):
     """Searchable gallery of collected posts (competitors', and ours if asked)."""
+    _check_platform(platform)
     ds = _dataset(session, org_id)
     saved = session.exec(select(CollectionItem).where(CollectionItem.org_id == org_id)).all()
     saved_in = {}

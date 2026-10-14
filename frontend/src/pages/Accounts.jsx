@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  addAccount, ago, compact, deleteAccount, duration, editAccount, FORMAT_LABEL, getAccounts, getDna, NOT_CONFIGURED_TEXT, num, PLATFORM_LABEL,
+  addAccount, ago, compact, deleteAccount, duration, editAccount, FORMAT_LABEL, getAccounts, getDna, NOT_CONFIGURED_TEXT, num, PLATFORM_LABEL, SOURCE_LABEL,
 } from "../api";
 import ChannelInput from "../components/ChannelInput";
 import ProfileInput from "../components/ProfileInput";
@@ -32,10 +32,10 @@ function DnaProfile({ p, onNavigate }) {
       <div className="meta-grid">
         <Stat label="Posts per week">{p.per_week} <span className="muted small">({p.posts} posts in {p.span_days} days)</span></Stat>
         <Stat label="Main format">{top ? `${FORMAT_LABEL[top.format] || top.format} (${top.share}%)` : "–"}</Stat>
-        {p.account.platform === "youtube" && (
+        {p.median_duration_seconds ? <Stat label="Typical length">{duration(p.median_duration_seconds)}</Stat> : null}
+        {p.views_sample > 0 && (
           <>
-            <Stat label="Typical length">{p.median_duration_seconds ? duration(p.median_duration_seconds) : "Not available"}</Stat>
-            <Stat label="Typical views">{num(p.median_views)} <span className="muted small">({p.views_sample} videos)</span></Stat>
+            <Stat label="Typical views">{num(p.median_views)} <span className="muted small">({p.views_sample} posts)</span></Stat>
             <Stat label="Engagement">{p.engagement_rate === null ? "Not available" : `${p.engagement_rate}%`}{p.likes_hidden > 0 && <span className="muted small"> · likes hidden on {p.likes_hidden}</span>}</Stat>
           </>
         )}
@@ -127,7 +127,7 @@ function DnaCompare({ orgId, onClose }) {
     ["Posts (last 90 days)", (p) => p.posts],
     ["Main format", (p) => (p.formats?.[0] ? `${FORMAT_LABEL[p.formats[0].format] || p.formats[0].format} (${p.formats[0].share}%)` : "–")],
     ["Typical length", (p) => (p.median_duration_seconds ? duration(p.median_duration_seconds) : "–")],
-    ["Typical views", (p) => (p.account.platform === "youtube" ? num(p.median_views) : "Not reported")],
+    ["Typical views", (p) => (p.views_sample > 0 ? num(p.median_views) : "Not reported")],
     ["Engagement", (p) => (p.engagement_rate === null || p.engagement_rate === undefined ? "–" : `${p.engagement_rate}%`)],
     ["Top topics", (p) => (p.main_topics || []).slice(0, 3).map((t) => t.topic).join(", ") || "–"],
     ["Common title pattern", (p) => (p.title_patterns?.[0] ? `${p.title_patterns[0].label} (${p.title_patterns[0].share}%)` : "–")],
@@ -183,7 +183,7 @@ function EditDialog({ orgId, account, groups, onSaved, onClose }) {
           </select>
         </label>
       )}
-      <label className="field"><span>{account.platform === "youtube" ? "YouTube handle or link" : "RSS link"}</span>
+      <label className="field"><span>{SOURCE_LABEL[account.platform] || "Link or handle"}</span>
         <input value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })} />
         {changedSource && <small className="warn-text">The new link is checked before saving. If it's a different account, its old posts are removed.</small>}
       </label>
@@ -257,7 +257,7 @@ export default function Accounts({ orgId, onChanged, platforms, groups = [], ref
 
   const isYT = form.platform === "youtube";
   const isSocial = ["instagram", "facebook", "x"].includes(form.platform);
-  const sourceLabel = platforms?.supported?.find((p) => p.id === form.platform)?.source_label || (isYT ? "YouTube channel" : "RSS link");
+  const sourceLabel = SOURCE_LABEL[form.platform] || "Link or handle";
   const competitors = (list || []).filter((a) => !a.is_us).length;
 
   return (
@@ -277,8 +277,8 @@ export default function Accounts({ orgId, onChanged, platforms, groups = [], ref
         <label className="field">
           <span>Platform</span>
           <select id="acc-platform" value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })}>
-            {(platforms?.supported || [{ id: "youtube", label: "YouTube" }, { id: "rss", label: "Website / blog (RSS)" }]).map((p) => (
-              <option key={p.id} value={p.id}>{p.label}</option>
+            {(platforms?.supported || [{ id: "youtube" }, { id: "rss" }]).map((p) => (
+              <option key={p.id} value={p.id}>{PLATFORM_LABEL[p.id] || p.label}</option>
             ))}
           </select>
         </label>

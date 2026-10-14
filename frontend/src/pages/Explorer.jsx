@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import {
-  compact, duration, fmtTime, FORMAT_LABEL, getContent, PLATFORM_LABEL, removeFromCollection, saveToCollection,
+  ALL_PLATFORMS, compact, duration, fmtTime, FORMAT_LABEL, getContent, PLATFORM_LABEL, removeFromCollection, saveToCollection,
 } from "../api";
 import Popup from "../components/Popup";
 import { BriefButton, Empty, Loading, PageHead } from "../components/ui";
@@ -260,12 +260,10 @@ export default function Explorer({ orgId, refreshKey, onNavigate }) {
             <option key={a.id} value={a.id}>{a.name} ({PLATFORM_LABEL[a.platform] || a.platform})</option>
           ))}
         </select>
-        {f?.platforms.length > 1 && (
-          <select value={filters.platform} onChange={set("platform")} aria-label="Platform">
-            <option value="">All platforms</option>
-            {f.platforms.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p] || p}</option>)}
-          </select>
-        )}
+        <select value={filters.platform} onChange={set("platform")} aria-label="Platform">
+          <option value="">All platforms</option>
+          {ALL_PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}
+        </select>
         {f?.formats.length > 1 && (
           <select value={filters.format} onChange={set("format")} aria-label="Format">
             <option value="">All formats</option>

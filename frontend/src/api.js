@@ -170,7 +170,14 @@ export function period(hours) {
   return hours >= 48 ? `the last ${Math.round(hours / 24)} days` : `the last ${hours} hours`;
 }
 
-export const PLATFORM_LABEL = { rss: "Website", youtube: "YouTube", instagram: "Instagram", facebook: "Facebook", x: "X" };
+export const PLATFORM_LABEL = { youtube: "YouTube", instagram: "Instagram", facebook: "Facebook", x: "X (Twitter)", rss: "Website / Blog" };
+// Every supported platform, in display order. Filters always offer all of them.
+export const ALL_PLATFORMS = Object.keys(PLATFORM_LABEL);
+// What to type for each platform's account (Accounts form and Edit dialog).
+export const SOURCE_LABEL = {
+  youtube: "YouTube channel (name, @handle or link)", instagram: "Instagram username or profile link",
+  facebook: "Facebook Page name or link", x: "X (Twitter) username or profile link", rss: "RSS feed link",
+};
 export const FORMAT_LABEL = {
   short: "Short", video: "Video", long: "Long-form", live: "Live stream", article: "Article",
   image: "Image", podcast: "Podcast", newsletter: "Newsletter", reel: "Reel", carousel: "Carousel", post: "Post",

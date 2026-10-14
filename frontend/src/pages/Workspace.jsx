@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { saveConfig } from "../api";
+import { PLATFORM_LABEL, saveConfig } from "../api";
 import { PageHead } from "../components/ui";
 
 const WINDOWS = [
@@ -162,7 +162,7 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
           <div className="chips">
             {supported.map((p) => (
               <button type="button" key={p.id} className={`chip ${form.platforms.includes(p.id) ? "on" : ""}`} onClick={() => toggle("platforms", p.id)} aria-pressed={form.platforms.includes(p.id)}>
-                {p.label}
+                {PLATFORM_LABEL[p.id] || p.label}
               </button>
             ))}
             {planned.map((p) => (

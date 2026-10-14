@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
-  ago, compact, duration, fmtDate, fmtTime, FORMAT_LABEL, getDashboard, num, NOT_CONFIGURED_TEXT, PLATFORM_LABEL, ratio, ratioTone, tzLabel,
+  ago, ALL_PLATFORMS, compact, duration, fmtDate, fmtTime, FORMAT_LABEL, getDashboard, num, NOT_CONFIGURED_TEXT, PLATFORM_LABEL, ratio,
+  ratioTone, tzLabel,
 } from "../api";
 import PlatformIcon from "../components/PlatformIcon";
 import { PostMini } from "../components/Evidence";
@@ -344,6 +345,10 @@ export default function Performance({ orgId, refreshKey, onNavigate }) {
   if (error) return <section className="panel"><Empty title="Performance not available">{error}</Empty></section>;
   if (!data) return <section className="panel"><Loading what="Loading performance…" /></section>;
   const f = data.facets;
+  const platform = filters.platform;
+  const show = (p) => !platform || platform === p; // with a platform filter, only that platform's sections
+  const hasAccounts = (f.platforms || []).includes(platform);
+  const noViews = ["instagram", "facebook", "rss"].includes(platform); // these platforms report no view counts
 
   return (
     <>
@@ -360,14 +365,12 @@ export default function Performance({ orgId, refreshKey, onNavigate }) {
           </select>
           <select value={filters.competitor_id} onChange={set("competitor_id")} aria-label="Competitor">
             <option value="">All competitors</option>
-            {f.competitors.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.platform === "rss" ? "Website" : "YouTube"})</option>)}
+            {f.competitors.map((c) => <option key={c.id} value={c.id}>{c.name} ({PLATFORM_LABEL[c.platform] || c.platform})</option>)}
           </select>
-          {f.platforms?.length > 1 && (
-            <select value={filters.platform} onChange={set("platform")} aria-label="Platform">
-              <option value="">All platforms</option>
-              {f.platforms.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p] || p}</option>)}
-            </select>
-          )}
+          <select value={filters.platform} onChange={set("platform")} aria-label="Platform">
+            <option value="">All platforms</option>
+            {ALL_PLATFORMS.map((p) => <option key={p} value={p}>{PLATFORM_LABEL[p]}</option>)}
+          </select>
           {f.formats.length > 1 && (
             <select value={filters.format} onChange={set("format")} aria-label="Format">
               <option value="">All formats</option>
@@ -379,6 +382,12 @@ export default function Performance({ orgId, refreshKey, onNavigate }) {
           {active && <button className="btn ghost small-btn" onClick={() => { setFilters(EMPTY); setTopicText(""); }}>Clear filters</button>}
           {loading && <span className="muted small">Updating…</span>}
         </div>
+        {platform && !hasAccounts && (
+          <p className="notice small">
+            No {PLATFORM_LABEL[platform]} accounts in this workspace yet, so there's nothing to show for it.{" "}
+            <button className="link-btn" onClick={() => onNavigate("accounts")}>Add accounts</button>
+          </p>
+        )}
         <SummaryCards metrics={data.summary} />
       </section>
 
@@ -393,22 +402,24 @@ export default function Performance({ orgId, refreshKey, onNavigate }) {
           {data.top_posts.length ? (
             <div className="post-mini-list single">{data.top_posts.map((p) => <PostMini key={p.id} p={p} />)}</div>
           ) : (
-            <p className="muted">{data.has_baseline ? "No posts of yours with view data in this view." : "Needs 5+ of your videos at least 48 hours old (last 90 days) before 'vs usual' can be calculated."}</p>
+            <p className="muted">{noViews ? `${PLATFORM_LABEL[platform]} doesn't report views, so posts can't be ranked against your usual.`
+              : data.has_baseline ? "No posts of yours with view data in this view."
+              : "Needs 5+ of your posts with views, at least 48 hours old (last 90 days), before 'vs usual' can be calculated."}</p>
           )}
         </section>
         <section className="panel">
           <PageHead title="Competitor standouts" what="Competitor posts at 1.5× or more of their own usual views." />
           {data.competitor_standouts.length ? (
             <div className="post-mini-list single">{data.competitor_standouts.map((p) => <PostMini key={p.id} p={p} />)}</div>
-          ) : <p className="muted">None in this view.</p>}
+          ) : <p className="muted">{noViews ? `${PLATFORM_LABEL[platform]} doesn't report views, so standouts can't be found.` : "None in this view."}</p>}
         </section>
       </div>
 
       <FormatTopicTables formats={data.formats} topics={data.topics} />
-      <YouTubeSection yt={data.youtube} onNavigate={onNavigate} />
-      <WebsiteSection web={data.website} onNavigate={onNavigate} />
-      {data.social && <SocialSections social={data.social} onNavigate={onNavigate} />}
-      <ChannelComparison perf={data.comparison} />
+      {show("youtube") && <YouTubeSection yt={data.youtube} onNavigate={onNavigate} />}
+      {show("rss") && <WebsiteSection web={data.website} onNavigate={onNavigate} />}
+      {data.social && <SocialSections social={data.social.filter((x) => show(x.platform))} onNavigate={onNavigate} />}
+      {show("youtube") && <ChannelComparison perf={data.comparison} />}
     </>
   );
 }

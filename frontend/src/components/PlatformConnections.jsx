@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { choosePage, connectPlatform, disconnectPlatform, fmtDate, getIntegrations, NOT_CONFIGURED_TEXT } from "../api";
+import { choosePage, connectPlatform, disconnectPlatform, fmtDate, getIntegrations, NOT_CONFIGURED_TEXT, PLATFORM_LABEL } from "../api";
 import PlatformIcon from "./PlatformIcon";
 import Popup from "./Popup";
 
@@ -63,7 +63,9 @@ export default function PlatformConnections({ orgId, onChanged }) {
 
   const load = useCallback(async () => {
     try {
-      setData(await getIntegrations(orgId));
+      const d = await getIntegrations(orgId);
+      // Same platform names as everywhere else in the app (e.g. "X (Twitter)").
+      setData({ ...d, platforms: d.platforms.map((p) => ({ ...p, label: PLATFORM_LABEL[p.id] || p.label })) });
       setError("");
     } catch (e) {
       setError(e.message);

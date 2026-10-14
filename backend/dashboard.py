@@ -73,7 +73,8 @@ def _metric(key, label, ours, theirs, fmt, definition, source, sample_ours, samp
             "sample_theirs": sample_theirs, "note": note}
 
 
-def summary(ds, posts, opportunities):
+def summary(ds, posts, opportunities, platform=None):
+    """Summary cards. With a platform filter, only that platform's cards are shown."""
     ours = [p for p in posts if ds.is_us(p)]
     theirs = [p for p in posts if not ds.is_us(p)]
     days = max((ds.now - ds.since).days, 1)
@@ -83,14 +84,17 @@ def summary(ds, posts, opportunities):
         _metric("competitor_posts", "Competitor posts", len(theirs), None, "count",
                 "Posts collected from the competitors in this view.", SOURCES["calc"], len(theirs), None),
     ]
-    for platform, label in PER_WEEK_LABELS.items():
-        o = [p for p in ours if p.platform == platform]
-        t = [p for p in theirs if p.platform == platform]
-        if not o and not t:
+    for pid, label in PER_WEEK_LABELS.items():
+        if platform and pid != platform:
             continue
-        comp_ids = {p.competitor_id for p in t} or {a.id for a in ds.accounts if not a.is_us and a.platform == platform}
+        o = [p for p in ours if p.platform == pid]
+        t = [p for p in theirs if p.platform == pid]
+        # Show the card when there are posts, or accounts on this platform (then 0 posts is a real count).
+        if not o and not t and not any(a.platform == pid for a in ds.accounts):
+            continue
+        comp_ids = {p.competitor_id for p in t} or {a.id for a in ds.accounts if not a.is_us and a.platform == pid}
         theirs_rate = round(len(t) / max(len(comp_ids), 1) / days * 7, 1) if comp_ids else None
-        out.append(_metric(f"per_week_{platform}", label, round(len(o) / days * 7, 1), theirs_rate, "number",
+        out.append(_metric(f"per_week_{pid}", label, round(len(o) / days * 7, 1), theirs_rate, "number",
                            "Posts in the period ÷ days × 7. Competitors: average per competitor account.",
                            SOURCES["calc"], len(o), len(t)))
 
@@ -100,7 +104,7 @@ def summary(ds, posts, opportunities):
     for p in yt_theirs:
         per_comp[p.competitor_id].append(p.views)
     comp_medians = [median(v) for v in per_comp.values()]
-    has_yt = any(a.platform == "youtube" for a in ds.accounts)
+    has_yt = platform in (None, "", "youtube") and any(a.platform == "youtube" for a in ds.accounts)
     if has_yt:
         out.append(_metric(
             "typical_views", "Typical views (YouTube)",
@@ -333,7 +337,7 @@ def build(ds, all_posts, *, fmt=None, topic=None, platform=None, recs=(), audien
         "period": ds.period(),
         "freshness": ds.freshness(),
         "filters": {"format": fmt, "topic": topic, "platform": platform},
-        "summary": summary(ds, posts, len(actionable)),
+        "summary": summary(ds, posts, len(actionable), platform),
         "trend": trend(ds, posts, all_posts, audience_snaps or {}),
         "insights": insights(ds, posts, formats, topic_rows, actionable),
         "top_posts": [ds.post_card(p) for p in sorted(
