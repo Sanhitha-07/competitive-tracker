@@ -12,6 +12,8 @@ History:            /organizations/{org_id}/history, /organizations/{org_id}/pos
 Competitors:        /organizations/{org_id}/dna (Content DNA), /changes (Change Detector)
 Opportunities:      /organizations/{org_id}/opportunities (+ /{opp_id}, /brief, /mediaops, /calendar.ics, /evaluate)
 Experiments:        /organizations/{org_id}/experiments (+ /{exp_id}, /evaluate), strategies included in the list
+Overview:           /organizations/{org_id}/briefing (plain-language briefing + charts; POST /briefing/ai for the AI one)
+Trends:             /organizations/{org_id}/trends (+ POST /trends/refresh)
 
     run_api.bat      then open http://localhost:8000/docs
 """
@@ -25,17 +27,21 @@ from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, func, select
 
+import ai
 import changes as change_detector
+import config
 import connectors
 import dashboard
 import dna
 import experiments as exps
+import insights
 import integrations
 import mediaops
 import opportunities as opps
 import recommend
 import social_http
 import social_routes
+import trends
 import workspace
 import youtube
 from analysis import analyse
@@ -44,7 +50,7 @@ from db import create_tables, get_session
 from fetcher import fetch_org
 from models import (ACCOUNT_GROUPS, EXPERIMENT_STATUSES, AccountSnapshot, AudienceQuestion, ChangeEvent,
                     CollectionItem, Competitor, Experiment, MetricSnapshot, OAuthState, Opportunity, Organization,
-                    Post, SocialConnection)
+                    Post, SocialConnection, TrendItem)
 from performance import compare
 from topics import GAP_STATUSES, STATUS_LABELS
 
@@ -79,6 +85,9 @@ def meta_options():
             "account_groups": [{"id": k, "label": v} for k, v in ACCOUNT_GROUPS.items()],
             "experiment_metrics": [{"id": k, **v} for k, v in exps.TARGET_METRICS.items()],
             "youtube_quota": {"used_today": youtube.units_used(), "left": youtube.budget_left()},
+            "trends": {"google_trends": config.TRENDS_GOOGLE_TRENDS, "google_news": config.TRENDS_GOOGLE_NEWS,
+                       "youtube_trending": bool(youtube.YOUTUBE_API_KEY)},
+            "ai_available": ai.configured(),
             "mediaops_api": mediaops.configured()}
 
 
@@ -104,6 +113,8 @@ class WorkspaceIn(BaseModel):
     timezone: Optional[str] = None
     time_sensitive: Optional[bool] = None
     window_hours: Optional[int] = None
+    region: Optional[str] = None        # country for internet trends
+    brand_safety: Optional[str] = None  # how sensitive news is handled
 
 
 class OrganizationIn(WorkspaceIn):
@@ -147,6 +158,12 @@ def _apply_config(org, data: WorkspaceIn):
             ZoneInfo(sent["timezone"])
         except (ZoneInfoNotFoundError, ValueError):
             raise HTTPException(400, "Unknown time zone. Use a name like Asia/Kolkata or America/New_York.")
+    if sent.get("region"):
+        sent["region"] = sent["region"].upper()
+        if sent["region"] not in workspace.REGIONS:
+            raise HTTPException(400, "Choose a country from the list.")
+    if sent.get("brand_safety") and sent["brand_safety"] not in workspace.BRAND_SAFETY:
+        raise HTTPException(400, "Choose a brand-safety level from the list.")
     if sent.get("window_hours") is not None and not 1 <= sent["window_hours"] <= 24 * 90:
         raise HTTPException(400, "The time window must be between 1 hour and 90 days.")
     if sent.get("topic_rules") is not None:
@@ -162,7 +179,7 @@ def _apply_config(org, data: WorkspaceIn):
         if k in sent and sent[k] is not None:
             sent[k] = sent[k].strip() or None
     for k, v in sent.items():
-        if k != "name" and (v is not None or k in ("niche", "sub_niche", "audience", "creator_type", "time_sensitive")):
+        if k != "name" and (v is not None or k in ("niche", "sub_niche", "audience", "creator_type", "time_sensitive", "brand_safety")):
             setattr(org, k, v)
 
 
@@ -183,6 +200,8 @@ def add_organization(data: OrganizationIn, session: Session = Depends(get_sessio
     org.category = workspace.industry_id(org)
     if not data.window_hours:  # default from the industry: news 24 hours, most creators 2-4 weeks
         org.window_hours = workspace.INDUSTRIES[org.category][1]
+    if data.goals is None and org.creator_type:  # starting goals for this kind of business; editable
+        org.goals = list(workspace.profile(org.creator_type)["goals"])
     session.add(org)
     session.commit()
     session.refresh(org)
@@ -218,7 +237,7 @@ def remove_organization(org_id: int, session: Session = Depends(get_session)):
     for c in session.exec(select(Competitor).where(Competitor.org_id == org_id)).all():
         _delete_account_data(session, c.id)
         session.delete(c)
-    for table in (Opportunity, CollectionItem, ChangeEvent, Experiment, SocialConnection, OAuthState):
+    for table in (Opportunity, CollectionItem, ChangeEvent, Experiment, SocialConnection, OAuthState, TrendItem):
         session.exec(delete(table).where(table.org_id == org_id))
     session.delete(org)
     session.commit()
@@ -466,8 +485,15 @@ def _label(platform):
 
 @app.post("/organizations/{org_id}/fetch")
 def fetch(org_id: int, session: Session = Depends(get_session)):
-    _org(session, org_id)
-    return fetch_org(session, org_id)
+    org = _org(session, org_id)
+    result = fetch_org(session, org_id)
+    # Trends are read on every Refresh too (cached for an hour); a failure never blocks the posts.
+    try:
+        result["trends"] = trends.refresh(session, org, trends.competitor_topics(_dataset(session, org_id)))
+    except Exception as exc:  # noqa: BLE001 - trends are optional
+        session.rollback()
+        result["trends"] = {"error": str(exc)[:200]}
+    return result
 
 
 def _load(session, org_id):
@@ -502,11 +528,18 @@ def _audience_snaps(session, account_ids):
     return out
 
 
-def _analyse_all(session, org_id):
+def _trend_items(session, ds):
+    return trends.load(session, ds, trends.competitor_topics(ds))
+
+
+def _analyse_all(session, org_id, with_trends=False):
     ds = _dataset(session, org_id)
     news = analyse(ds.posts, ds.accounts, window_hours=ds.org.window_hours)
     perf = compare(ds.accounts, ds.posts, gaps_count=len(news["gaps"]), tz=ds.tz)
-    recs = recommend.build(ds, perf, opps.learned_stats(session, org_id))
+    trend_items = _trend_items(session, ds)
+    recs = recommend.build(ds, perf, opps.learned_stats(session, org_id), trend_items)
+    if with_trends:
+        return ds, news, perf, recs, trend_items
     return ds, news, perf, recs
 
 
@@ -625,6 +658,49 @@ def get_dashboard(org_id: int, days: int = Query(default=90, ge=7, le=365), comp
         "topics": [t["topic"] for t in full.topics()[0][:40]],
     }
     return out
+
+
+# ---- Overview (plain-language briefing), trends and the optional AI briefing ----
+
+@app.get("/organizations/{org_id}/briefing")
+def briefing(org_id: int, session: Session = Depends(get_session)):
+    """The Overview tab: plain-language briefing, KPIs and chart data for the period."""
+    ds, _, perf, recs, trend_items = _analyse_all(session, org_id, with_trends=True)
+    ids = [a.id for a in ds.accounts]
+    snaps = {}
+    if ids:
+        for sn in session.exec(select(AccountSnapshot).where(AccountSnapshot.competitor_id.in_(ids))).all():
+            snaps.setdefault(sn.competitor_id, []).append(sn)
+    return {**insights.build(ds, perf, recs, trend_items, snaps), "config": ds.cfg, "ai_available": ai.configured()}
+
+
+@app.post("/organizations/{org_id}/briefing/ai")
+def ai_briefing(org_id: int, session: Session = Depends(get_session)):
+    """Optional: Claude rewrites the briefing and suggests content ideas from the Overview's numbers."""
+    data = briefing(org_id, session)
+    try:
+        return ai.briefing(org_id, insights.ai_input(data, data["config"]))
+    except ValueError as exc:
+        raise HTTPException(400 if not ai.configured() else 502, str(exc))
+
+
+@app.get("/organizations/{org_id}/trends")
+def get_trends(org_id: int, session: Session = Depends(get_session)):
+    """Trends that match this workspace, with sensitivity, competitor coverage and angles."""
+    ds = _dataset(session, org_id)
+    last = trends.last_refresh(session, org_id)
+    return {"trends": _trend_items(session, ds), "last_refresh": iso(last), "config": ds.cfg,
+            "sources": {"google_trends": config.TRENDS_GOOGLE_TRENDS, "google_news": config.TRENDS_GOOGLE_NEWS,
+                        "youtube_trending": bool(youtube.YOUTUBE_API_KEY)},
+            "method": "Trends come from Google's daily searches and Google News for your country, and YouTube Trending "
+                      "for your industry's category. They're kept when they match your topics, niche, audience, industry "
+                      "or your competitors' topics. Sensitivity is a keyword check that errs on the side of caution."}
+
+
+@app.post("/organizations/{org_id}/trends/refresh")
+def refresh_trends(org_id: int, session: Session = Depends(get_session)):
+    org = _org(session, org_id)
+    return trends.refresh(session, org, trends.competitor_topics(_dataset(session, org_id)), force=True)
 
 
 @app.get("/organizations/{org_id}/recommendations")

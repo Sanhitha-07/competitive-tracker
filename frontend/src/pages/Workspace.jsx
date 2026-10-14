@@ -24,6 +24,8 @@ function fromConfig(cfg, org) {
     timezone: cfg?.timezone || "Asia/Kolkata",
     time_sensitive: Boolean(cfg?.time_sensitive),
     window_hours: org?.window_hours || cfg?.window_hours || 720,
+    region: cfg?.region || "IN",
+    brand_safety: cfg?.brand_safety || "standard",
   };
 }
 
@@ -45,6 +47,18 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
   );
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
   const toggle = (k, v) => setForm((f) => ({ ...f, [k]: f[k].includes(v) ? f[k].filter((x) => x !== v) : [...f[k], v] }));
+
+  function pickType(e) {
+    const id = e.target.value;
+    const p = options?.creator_types.find((c) => c.id === id);
+    // The type gives starting goals and a brand-safety level; the user can change both.
+    setForm((f) => ({
+      ...f, creator_type: id,
+      goals: f.goals.length ? f.goals : p?.goals || [],
+      brand_safety: p?.brand_safety || f.brand_safety,
+      time_sensitive: p?.time_sensitive ? true : f.time_sensitive,
+    }));
+  }
 
   function pickIndustry(e) {
     const id = e.target.value;
@@ -95,7 +109,7 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
           </label>
           <label className="field">
             <span>Creator / business type</span>
-            <select id="ws-type" value={form.creator_type} onChange={set("creator_type")}>
+            <select id="ws-type" value={form.creator_type} onChange={pickType}>
               <option value="">Choose…</option>
               {options.creator_types.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
             </select>
@@ -170,6 +184,26 @@ export default function Workspace({ orgId, org, config, options, onSaved, onNavi
             ))}
           </div>
           <small className="muted">Hover over a "not yet" platform to see what's needed to connect it.</small>
+        </fieldset>
+
+        <fieldset>
+          <legend>Trends and sensitive news</legend>
+          <label className="field">
+            <span>Country (for trends)</span>
+            <select id="ws-region" value={form.region} onChange={set("region")}>
+              {options.regions.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+          </label>
+          <label className="field grow">
+            <span>Brand safety</span>
+            <select id="ws-safety" value={form.brand_safety} onChange={set("brand_safety")}>
+              {options.brand_safety.map((b) => <option key={b.id} value={b.id}>{b.label}</option>)}
+            </select>
+          </label>
+          <small className="muted">
+            Decides how trends about deaths, disasters, violence, politics, religion, health scares or legal cases are handled.
+            Brands and businesses are never told to join them; creators only with care; newsrooms get guidance for covering them responsibly.
+          </small>
         </fieldset>
 
         <fieldset>

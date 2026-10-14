@@ -1,4 +1,4 @@
-import { ago, compact, fmtDate, fmtTime, FORMAT_LABEL } from "../api";
+import { ago, compact, fmtDate, fmtTime, FORMAT_LABEL, METRIC_WORD, PLATFORM_LABEL } from "../api";
 
 const CONF_TONE = { high: "good", medium: "warn", low: "bad" };
 
@@ -19,7 +19,8 @@ export function PostMini({ p }) {
         <b>{p.title}</b>
         <span className="muted small">
           {p.account}
-          {p.views != null && <> · {compact(p.views)} views</>}
+          {p.platform && p.platform !== "rss" && <> · {PLATFORM_LABEL[p.platform]}</>}
+          {p.metric_value != null ? <> · {compact(p.metric_value)} {METRIC_WORD[p.platform]}</> : p.views != null && <> · {compact(p.views)} views</>}
           {p.relative != null && <> · <span className={p.relative >= 1.2 ? "good-text" : ""}>{p.relative}× usual</span></>}
           {" · "}{fmtTime(p.published_at)}
         </span>
@@ -76,6 +77,17 @@ export default function Evidence({ rec, open = false }) {
                 “{q.text}”
                 <span className="muted small"> {q.likes} likes · on {q.is_us ? "your" : `${q.account}'s`} video “{q.on_post}”</span>
               </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {ev.links?.length > 0 && (
+        <div className="ev-block">
+          <h4>Sources</h4>
+          <ul className="limits">
+            {ev.links.map((l, i) => (
+              <li key={i}><a href={l.link} target="_blank" rel="noreferrer">{l.title}</a>{l.source && <span className="muted small"> · {l.source}</span>}</li>
             ))}
           </ul>
         </div>

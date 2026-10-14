@@ -236,7 +236,7 @@ def insights(ds, posts, formats, topic_rows, recs):
         t = max(best, key=lambda r: r["our_median_relative"])
         ev = [ds.post_card(ds.post_by_id[i]) for i in t["post_ids"] if ds.is_us(ds.post_by_id[i])][:4]
         out.append({"id": "best_topic", "tone": "good", "title": f'Your posts about "{t["topic"]}" do better than usual',
-                    "detail": f'Your {t["our_sample"]} posts on it got a median of {t["our_median_relative"]}× your usual views.',
+                    "detail": f'Your {t["our_sample"]} posts on it got a median of {t["our_median_relative"]}× your usual.',
                     "why": "A topic that beats your own baseline is a candidate for more posts or a series.",
                     "sample": f'{t["our_sample"]} of your posts with view data.', "evidence": ev,
                     "limitation": "Topics are matched by keywords; a few strong posts can lift a small sample.",
@@ -248,7 +248,7 @@ def insights(ds, posts, formats, topic_rows, recs):
         top, second = ranked[0], ranked[1]
         if top["ours"]["median_relative"] >= INSIGHT_LIFT and top["ours"]["median_relative"] - second["ours"]["median_relative"] >= 0.3:
             out.append({"id": "best_format", "tone": "good", "title": f'Your "{top["format"]}" posts beat your usual',
-                        "detail": f'Median {top["ours"]["median_relative"]}× your usual views ({top["ours"]["sample"]} posts), '
+                        "detail": f'Median {top["ours"]["median_relative"]}× your usual ({top["ours"]["sample"]} posts), '
                                   f'vs {second["ours"]["median_relative"]}× for "{second["format"]}" ({second["ours"]["sample"]} posts).',
                         "why": "Compared with your own baseline, so channel size doesn't matter.",
                         "sample": f'{top["ours"]["sample"] + second["ours"]["sample"]} of your posts.', "evidence": [],
@@ -260,7 +260,7 @@ def insights(ds, posts, formats, topic_rows, recs):
     if standouts:
         n = len(standouts)
         out.append({"id": "competitor_standouts", "tone": "info",
-                    "title": f'{n} competitor post{"s" if n != 1 else ""} did {STANDOUT_RATIO:g}×+ their usual views',
+                    "title": f'{n} competitor post{"s" if n != 1 else ""} did {STANDOUT_RATIO:g}×+ their usual',
                     "detail": f'Top: "{standouts[0].title}" by {ds.by_id[standouts[0].competitor_id].name} '
                               f'at {ds.relative[standouts[0].id]}× its channel\'s usual.',
                     "why": "Posts far above their own channel's usual show what that audience responded to.",

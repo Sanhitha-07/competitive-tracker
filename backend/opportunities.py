@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from sqlmodel import select
 
 import workspace
+from connectors import interactions, metric_value, performance_metric
 from dataset import iso, utc
 from models import MetricSnapshot, Opportunity, Post
 
@@ -120,13 +121,16 @@ def match_published(session, opp, our_account_ids):
 
 
 def views_at(session, post, days):
-    """Views about `days` after publishing, from snapshots; falls back to the latest number."""
+    """The post's performance metric (views, or interactions on Instagram/Facebook) about `days`
+    after publishing, from snapshots; falls back to the latest number."""
     target = utc(post.published_at) + timedelta(days=days)
     snaps = session.exec(select(MetricSnapshot).where(MetricSnapshot.post_id == post.id)).all()
     after = sorted((s for s in snaps if utc(s.captured_at) >= target), key=lambda s: utc(s.captured_at))
     if after:
-        return after[0].views, utc(after[0].captured_at)
-    return post.views, utc(post.metrics_updated_at) if post.metrics_updated_at else None
+        snap = after[0]
+        value = snap.views if performance_metric(post.platform) == "views" else interactions(snap)
+        return value, utc(snap.captured_at)
+    return metric_value(post), utc(post.metrics_updated_at) if post.metrics_updated_at else None
 
 
 def evaluate(session, opp, ds):
@@ -139,8 +143,8 @@ def evaluate(session, opp, ds):
     if age < EVAL_AFTER_DAYS:
         return {"state": "measuring", "age_days": round(age, 1),
                 "note": f"Measured {EVAL_AFTER_DAYS} days after publishing ({round(EVAL_AFTER_DAYS - age, 1)} days to go)."}
-    if post.views is None or not base:
-        return {"state": "not_measurable", "note": "This platform has no view counts, or you don't have 5+ older posts to form a baseline."}
+    if metric_value(post) is None or not base:
+        return {"state": "not_measurable", "note": "This platform has no public numbers, or you don't have 5+ older posts to form a baseline."}
     views, measured_at = views_at(session, post, EVAL_AFTER_DAYS)
     ratio = round(views / base["median_views"], 2) if base["median_views"] else None
     verdict = "about_usual"
@@ -150,7 +154,7 @@ def evaluate(session, opp, ds):
         verdict = "below_usual"
     late = measured_at and (measured_at - utc(post.published_at)).days > EVAL_AFTER_DAYS + 2
     return {
-        "state": "evaluated", "views": views, "measured_at": iso(measured_at),
+        "state": "evaluated", "views": views, "metric": base.get("metric", "views"), "measured_at": iso(measured_at),
         "baseline_views": round(base["median_views"]), "baseline_posts": base["posts"],
         "ratio": ratio, "verdict": verdict, "post_title": post.title, "post_link": post.link,
         "note": ("Compared with your usual views. Many things affect a post's results, so this doesn't show "

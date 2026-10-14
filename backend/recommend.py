@@ -16,7 +16,7 @@ from rapidfuzz import fuzz
 
 import textutil
 import workspace
-from connectors import CONNECTORS, METRICS
+from connectors import CONNECTORS, METRICS, metric_value
 from dataset import OUTLIER_RATIO, iso, utc
 from performance import MIN_VIDEOS, PERF_DAYS
 from topics import GAP_STATUSES, STATUS_LABELS, STOPWORDS
@@ -39,8 +39,11 @@ KIND_LABELS = {
     "publishing_pattern": "Publishing pattern to investigate",
     "benchmark": "Benchmark",
     "content_idea": "Idea from a competitor post",
+    "trend": "Trending now",
 }
-ACTIONABLE = {"topic_gap", "audience_question", "outlier", "format_test", "content_idea"}
+ACTIONABLE = {"topic_gap", "audience_question", "outlier", "format_test", "content_idea", "trend"}
+METRIC_WORD = {"views": "views", "interactions": "interactions"}
+PLATFORM_LABEL = {"youtube": "YouTube", "instagram": "Instagram", "facebook": "Facebook", "x": "X", "rss": "website"}
 FRESH_DAYS = 14  # evidence from the last two weeks counts as recent
 CONFIDENCE_WEIGHT = {"high": 1.0, "medium": 0.85, "low": 0.7}
 
@@ -322,28 +325,31 @@ def _outlier_rec(ds, p, words):
     r = ds.relative[p.id]
     b = ds.baseline[p.competitor_id]
     acc = ds.by_id[p.competitor_id]
+    word = METRIC_WORD.get(b.get("metric"), "views")
+    value = metric_value(p)
     rel_score, reason = _relevance(ds.cfg, p.title + " " + " ".join(getattr(p, "tags", None) or []), words)
-    observed = (f'"{p.title}" by {acc.name} has {p.views:,} views, {r}× that account\'s usual '
+    where = f" ({PLATFORM_LABEL.get(p.platform, p.platform)})" if p.platform != "youtube" else ""
+    observed = (f'"{p.title}" by {acc.name}{where} has {value:,} {word}, {r}× that account\'s usual '
                 f'{round(b["median_views"]):,} (median of {b["posts"]} posts).')
     level = "medium" if b["posts"] >= 15 else "low"
     return {
         "key": f"outlier:{p.id}",
         "kind": "outlier",
         "tone": "info",
-        "title": f"{acc.name}: {r}× their usual views",
+        "title": f"{acc.name}: {r}× their usual {word}",
         "topic": p.title,
         "observed": observed,
         "detail": observed,
         "why_relevant": reason or f"{acc.name} is a competitor you track; posts far above their own baseline show what their audience responded to.",
         "evidence": {"posts": [ds.post_card(p)], "questions": [],
-                     "metrics": [{"label": "Views", "value": p.views},
-                                 {"label": "Account's usual views (median)", "value": round(b["median_views"])},
+                     "metrics": [{"label": word.capitalize(), "value": value},
+                                 {"label": f"Account's usual {word} (median)", "value": round(b["median_views"])},
                                  {"label": "Relative performance", "value": f"{r}×", "definition": METRICS["relative_performance"]}]},
         "sample": {"baseline_posts": b["posts"], "text": f"Baseline from {b['posts']} of {acc.name}'s posts in the last {b['days']} days."},
         "confidence": _confidence(level, f"Baseline from {b['posts']} posts; this is one post."),
         "limitations": [
             "One post. Promotion, collaborations, trends or the algorithm may explain it; this data can't show the cause.",
-            "Views keep growing after publishing, so very new and very old posts aren't perfectly comparable.",
+            f"{word.capitalize()} keep growing after publishing, so very new and very old posts aren't perfectly comparable.",
         ],
         "suggested_format": ds.format(p),
         "suggested_format_label": _format_label(ds.format(p)),
@@ -434,10 +440,10 @@ def format_recs(ds, learned, perf):
         if med < FORMAT_LIFT or share > 0.15:
             continue
         preferred = f in ds.cfg["formats"]
-        defn = CONNECTORS["youtube"].formats.get(f) or CONNECTORS["rss"].formats.get(f, "")
+        defn = next((c.formats[f] for c in CONNECTORS.values() if f in c.formats), "")
         yours = (f"{ours[f]} of your {our_total} recent posts use this format." if our_total
                  else f"You have no posts in the last {PERF_DAYS} days to compare.")
-        observed = (f"Competitors' {_format_label(f).lower()} posts get {round(med, 2)}× their usual views "
+        observed = (f"Competitors' {_format_label(f).lower()} posts get {round(med, 2)}× their usual results "
                     f"(median of {len(ps)} posts from {len(accounts)} accounts). {yours}")
         out.append({
             "key": f"format_test:{f}",
@@ -472,40 +478,55 @@ def format_recs(ds, learned, perf):
 
 
 def _from_performance(ds, perf, kind):
-    """Turn the Performance tab's comparison findings into fully explained recommendations."""
-    us, market = perf.get("us"), perf.get("market")
+    """Turn the Performance tab's comparison findings (every platform) into explained recommendations."""
+    blocks = perf.get("platforms") or ({"youtube": perf} if perf.get("us") else {})
+    out = []
+    for platform, block in blocks.items():
+        out += _platform_findings(ds, platform, block, kind)
+    return out
+
+
+def _platform_findings(ds, platform, block, kind):
+    us, market = block.get("us"), block.get("market")
     if not us or not market:
         return []
+    label = PLATFORM_LABEL.get(platform, platform)
+    unit = "videos" if platform == "youtube" else "posts"
+    n_us = us.get("videos", us.get("posts", 0))
+    n_market = market.get("total_videos", market.get("total_posts", 0))
     out = []
-    for s in perf["suggestions"]:
+    for s in block["suggestions"]:
         if s.get("kind") != kind or s.get("metric") is None:
             continue
-        level = "medium" if us["videos"] >= MIN_VIDEOS and market["videos"] >= MIN_VIDEOS and market["accounts"] >= 2 else "low"
+        level = "medium" if n_us >= MIN_VIDEOS and (market.get("videos") or market.get("posts") or 0) >= MIN_VIDEOS and market["accounts"] >= 2 else "low"
         lim = ["Competitor numbers are an average of each competitor (each counts once, whatever its size)."]
         if s["metric"] == "best_time":
             lim = [f"Time slots use your workspace time zone ({ds.cfg['timezone']}).",
-                   f"Your best slot is based on {us['best_time_sample']} video(s). A slot doing well may reflect the topics posted then, not the time itself."]
+                   f"Your best slot is based on {us['best_time_sample']} {unit}. A slot doing well may reflect the topics posted then, not the time itself."]
         if s["metric"] in ("median_views", "engagement_rate"):
             lim.append("Channels of very different sizes get very different views. Compare relative performance too.")
+        if s["metric"] == "engagement_per_follower":
+            lim.append("Small accounts usually have higher engagement per follower than big ones, so compare with accounts of a similar size.")
         if level == "low":
-            lim.append(f"Fewer than {MIN_VIDEOS} videos on one side: a rough guide only.")
+            lim.append(f"Fewer than {MIN_VIDEOS} {unit} on one side: a rough guide only.")
         title = s["title"] if kind != "publishing_pattern" else f"Worth investigating: {s['title'][0].lower()}{s['title'][1:]}"
         out.append({
-            "key": f"{kind}:{s['metric']}",
+            "key": f"{kind}:{s['metric']}" if platform == "youtube" else f"{kind}:{platform}:{s['metric']}",
             "kind": kind,
+            "platform": platform,
             "tone": s["tone"],
             "title": title,
             "topic": s["title"],
             "observed": s["detail"],
             "detail": s["detail"],
-            "why_relevant": "Compared with the YouTube competitors you track in this workspace.",
+            "why_relevant": f"Compared with the {label} competitors you track in this workspace.",
             "evidence": {"posts": [], "questions": [], "metrics": [
                 {"label": "You", "value": s["ours"]}, {"label": "Competitor average", "value": s["theirs"]},
                 {"label": "Metric", "value": s["metric"], "definition": METRICS.get(s["metric"], "")}]},
-            "sample": {"your_posts_checked": us["videos"], "competitor_posts": market["total_videos"],
+            "sample": {"your_posts_checked": n_us, "competitor_posts": n_market,
                        "competitor_accounts": market["accounts"],
-                       "text": f"{us['videos']} of your videos and {market['total_videos']} from {market['accounts']} competitors, last {PERF_DAYS} days."},
-            "confidence": _confidence(level, f"{us['videos']} vs {market['total_videos']} videos."),
+                       "text": f"{n_us} of your {label} {unit} and {n_market} from {market['accounts']} competitors, last {PERF_DAYS} days."},
+            "confidence": _confidence(level, f"{n_us} vs {n_market} {unit}."),
             "limitations": lim,
             "suggested_format": None,
             "suggested_format_label": None,
@@ -516,7 +537,61 @@ def _from_performance(ds, perf, kind):
     return out
 
 
-def build(ds, perf, learned=None):
+# ---- relevant internet trends (see trends.py) ----
+
+def trend_recs(ds, learned, trend_items):
+    """Trends that fit this workspace and are safe enough for its brand-safety setting."""
+    out = []
+    for t in trend_items or []:
+        if t["advice"]["action"] == "avoid":
+            continue  # shown in the Trends tab with a warning, never suggested
+        sens = t["sensitivity"]
+        theirs = t["coverage"]["competitors"]
+        level = "medium" if t["relevance"] >= 2.5 and (t["rising"] or theirs or t["source"] == "google_trends") else "low"
+        observed = f'{t["signal"]}. {t["coverage"]["text"]}'
+        limitations = [
+            "Relevance is found by matching keywords from your workspace, niche and competitors' topics; check that it really fits.",
+            "Trends move fast: what's rising today may be over in a day or two.",
+        ]
+        if sens["level"] != "safe":
+            limitations.insert(0, f'Flagged as {sens["level"]} ({", ".join(sens["labels"])}): {t["advice"]["advice"]}')
+        if t["source"] == "google_news":
+            limitations.append("Article counts come from Google News search results, which show at most about 100 articles.")
+        out.append({
+            "key": t["key"],
+            "kind": "trend",
+            "tone": "lagging" if theirs and not t["coverage"]["yours"] else "info",
+            "title": f'Trending: "{t["title"]}"' + (" (rising)" if t["rising"] else ""),
+            "topic": t["title"],
+            "observed": observed,
+            "detail": observed,
+            "why_relevant": t["why_relevant"],
+            "evidence": {"posts": t["coverage"]["posts"], "questions": [],
+                         "metrics": [
+                             {"label": "Signal", "value": t["signal"]},
+                             {"label": "Sensitivity", "value": f'{sens["level"]} - {t["advice"]["label"]}'},
+                             {"label": "Competitors covering it (7 days)", "value": len(theirs)},
+                             {"label": "Your posts on it (7 days)", "value": t["coverage"]["yours"]},
+                         ],
+                         "links": t["related"]},
+            "sample": {"text": f'{t["source_label"]}, read {(t["fetched_at"] or "")[:16].replace("T", " ")} UTC; compared with the last 7 days of tracked posts.'},
+            "confidence": _confidence(level, "Strong keyword match and a clear signal." if level == "medium" else "Loose keyword match or a weak signal."),
+            "limitations": limitations,
+            "sensitivity": sens,
+            "advice": t["advice"],
+            "angles": t["angles"],
+            "suggested_format": ds.cfg["formats"][0] if ds.cfg["formats"] else None,
+            "suggested_format_label": _format_label(ds.cfg["formats"][0]) if ds.cfg["formats"] else None,
+            "next_step": (t["advice"]["advice"] if t["advice"]["action"] == "care" else
+                          "Pick one angle below and publish while interest is high (today or tomorrow)."),
+            "data_period": {"from": None, "to": t["fetched_at"], "days": 7},
+            "_relevance": 1.6 if t["relevance"] >= 3 else 1.3 if t["relevance"] >= 1.5 else 1.0,
+            "score": t["rank"],
+        })
+    return [_finish(r, ds, learned) for r in out[:15]]  # every usable trend, so any card can be saved
+
+
+def build(ds, perf, learned=None, trend_items=None):
     """All recommendations, best first, each with full evidence."""
     learned = learned or {}
     fmts = format_recs(ds, learned, perf)
@@ -524,7 +599,7 @@ def build(ds, perf, learned=None):
     if any(r["key"] == "format_test:short" for r in fmts):
         fmts = [r for r in fmts if r["key"] != "format_test:shorts_pct"]
     recs = (topic_recs(ds, learned) + question_recs(ds, learned) + outlier_recs(ds, learned)
-            + fmts
+            + fmts + trend_recs(ds, learned, trend_items)
             + [_finish(r, ds, learned) for r in _from_performance(ds, perf, "publishing_pattern")]
             + [_finish(r, ds, learned) for r in _from_performance(ds, perf, "benchmark")])
     # Raw scores mean different things per kind (posts × accounts, likes, ×-baseline), so scale

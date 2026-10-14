@@ -9,3 +9,7 @@ if _db.exists():
 os.environ["TRACKER_DB"] = str(_db)
 os.environ["YOUTUBE_API_KEY"] = ""  # tests must never call the real API
 os.environ.setdefault("MEDIAOPS_DRAFTS_URL", "")
+# Tests must never call Google or Anthropic either.
+os.environ["TRENDS_GOOGLE_NEWS"] = "0"
+os.environ["TRENDS_GOOGLE_TRENDS"] = "0"
+os.environ["ANTHROPIC_API_KEY"] = ""

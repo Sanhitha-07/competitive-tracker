@@ -16,6 +16,7 @@ Kinds:
 from datetime import datetime, timedelta, timezone
 
 import topics as topic_map
+from connectors import metric_value
 from dataset import iso, utc
 from dna import _main_topics
 
@@ -94,12 +95,14 @@ def detect(ds, audience_snaps=None):
             r = ds.relative.get(p.id)
             if r is not None and r >= STANDOUT_RATIO:
                 b = ds.baseline[a.id]
+                word = b.get("metric") or "views"  # views on YouTube, interactions on Instagram/Facebook/X
+                value = metric_value(p)
                 events.append(_event(
-                    f"standout:{p.id}", "standout", a, f"{a.name}: a post at {r}× their usual views",
-                    f'"{p.title}" has {p.views:,} views vs the account\'s usual {round(b["median_views"]):,} (median of {b["posts"]} posts).',
+                    f"standout:{p.id}", "standout", a, f"{a.name}: a post at {r}× their usual {word}",
+                    f'"{p.title}" has {value:,} {word} vs the account\'s usual {round(b["median_views"]):,} (median of {b["posts"]} posts).',
                     "Shows what this account's audience responded to recently. One post can't show the cause.",
                     {"label": "Create a brief from it", "type": "brief_post", "post_id": p.id},
-                    previous=f"usual {round(b['median_views']):,} views", current=f"{p.views:,} views",
+                    previous=f"usual {round(b['median_views']):,} {word}", current=f"{value:,} {word}",
                     period={"from": iso(p.published_at), "to": iso(getattr(p, "metrics_updated_at", None) or now)},
                     evidence=[ds.post_card(p)]))
 

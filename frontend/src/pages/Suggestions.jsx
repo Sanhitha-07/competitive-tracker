@@ -5,6 +5,7 @@ import { BriefButton, Empty, Loading, PageHead } from "../components/ui";
 
 const KINDS = [
   { id: "all", label: "All" },
+  { id: "trend", label: "Trends" },
   { id: "topic_gap", label: "Topics" },
   { id: "audience_question", label: "Audience questions" },
   { id: "outlier", label: "Standout competitor posts" },
@@ -59,8 +60,14 @@ export function RecCard({ rec, actions }) {
       <b className="sugg-title">{rec.title}</b>
       <p><span className="lbl">What we saw (data):</span> {rec.observed}</p>
       <p><span className="lbl">Why it may matter (our reading):</span> {rec.why_relevant}</p>
+      {rec.advice && rec.advice.action !== "go" && (
+        <p className={`advice ${rec.advice.action}`}><b>{rec.advice.label}.</b> {rec.advice.advice}</p>
+      )}
       {rec.suggested_format_label && <p><span className="lbl">Suggested format:</span> {rec.suggested_format_label}</p>}
       <p><span className="lbl">Next step:</span> {rec.next_step}</p>
+      {rec.angles?.length > 0 && (
+        <div><span className="lbl">Angles you could take:</span><ul className="angles">{rec.angles.map((a) => <li key={a}>{a}</li>)}</ul></div>
+      )}
       {rec.related_topics?.length > 0 && <p className="muted small">Related topics: {rec.related_topics.join(", ")}</p>}
       <p className="meta-line small">
         {period(rec) && <span>Period: {period(rec)}</span>}

@@ -123,7 +123,8 @@ Accounts added before a platform was connected are **Unverified**; they're check
 
 - The tracker has no user login of its own (as before): connections belong to a **workspace**, and
   anyone who can open the tracker can use that workspace. Run it only where that is acceptable.
-- Instagram and Facebook posts have no view counts, so "× usual" (views ÷ usual views) is calculated
-  only for YouTube and X. Likes and comments are shown as reported.
+- Instagram, Facebook and X don't make competitors' views or reach public, so on those platforms
+  "× usual" is interactions (likes + comments + shares) ÷ the account's usual interactions. YouTube
+  uses views. Likes and comments are shown as reported.
 - No real connection has been tested yet: the sign-in and data flows are covered by automated tests
   with mocked platform responses only. Test with your own accounts once credentials are added.

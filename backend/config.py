@@ -36,3 +36,13 @@ SOCIAL_SETTINGS = {
 META_GRAPH_VERSION_DEFAULT = "v26.0"  # latest Graph API version as of July 2026; override with META_GRAPH_VERSION
 PUBLIC_API_URL_DEFAULT = "http://localhost:8000"  # where Meta and X send the user back (the OAuth redirect)
 FRONTEND_URL_DEFAULT = "http://localhost:5173"    # where the user lands after connecting
+
+# ---- Internet trends (no key needed) ----
+# Google News search RSS is for personal, non-commercial use under Google's terms;
+# set TRENDS_GOOGLE_NEWS=0 to switch it off for commercial deployments.
+TRENDS_GOOGLE_NEWS = os.environ.get("TRENDS_GOOGLE_NEWS", "1") != "0"
+TRENDS_GOOGLE_TRENDS = os.environ.get("TRENDS_GOOGLE_TRENDS", "1") != "0"
+
+# ---- Optional AI briefing (Claude). Empty = rule-based briefing only. ----
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+AI_MODEL = os.environ.get("AI_MODEL", "claude-opus-5-5")
